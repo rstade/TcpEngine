@@ -14,7 +14,7 @@ use bincode::{deserialize};
 use separator::Separatable;
 
 use netfcts::tcp_common::{TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size};
-use cmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
+use tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
 use {Configuration};
 #[cfg(feature = "profiling")]
 use netfcts::utils::TimeAdder;
@@ -23,14 +23,15 @@ use netfcts::utils::Timeouts;
 use netfcts::tasks::{PRIVATE_ETYPE_PACKET, PRIVATE_ETYPE_TIMER, ETYPE_IPV4};
 use netfcts::tasks::{private_etype, PacketInjector, TickGenerator, install_task};
 use netfcts::timer_wheel::TimerWheel;
-use netfcts::{prepare_checksum_and_ttl, RunConfiguration};
+use netfcts::{prepare_checksum_and_ttl, RunConfiguration, Store64};
 use netfcts::set_header;
 use netfcts::remove_tcp_options;
 use netfcts::{make_reply_packet, strip_payload};
-use netfcts::recstore::TEngineStore;
+//use netfcts::recstore::TEngineStore;
 
-use FnPayload;
+use {FnPayload, get_server_addresses};
 use std::convert::TryFrom;
+use netfcts::recstore::Extension;
 
 
 const MIN_FRAME_SIZE: usize = 60;
@@ -45,9 +46,8 @@ pub fn setup_generator<FPL>(
     pci: CacheAligned<PortQueueTxBuffered>,
     kni: CacheAligned<PortQueue>,
     sched: &mut StandaloneScheduler,
-    run_configuration: RunConfiguration<Configuration, TEngineStore>,
-    servers: Vec<L234Data>,
-    f_set_payload: Box<FPL>,
+    run_configuration: RunConfiguration<Configuration, Store64<Extension>>,
+    set_payload_closure: Box<FPL>,
 ) where
     FPL: FnPayload,
 {
@@ -62,6 +62,7 @@ pub fn setup_generator<FPL>(
     let system_data = run_configuration.system_data.clone();
     me.port = engine_config.port;
 
+    let servers: Vec<L234Data> = get_server_addresses(&run_configuration.engine_configuration);
     let pipeline_id = PipelineId {
         core: core as u16,
         port_id: pci.port_queue.port_id() as u16,
@@ -117,8 +118,8 @@ pub fn setup_generator<FPL>(
 
     // setting up a a reverse message channel between this pipeline and the main program thread
     debug!("{} setting up reverse channel", pipeline_id);
-    let (remote_tx, rx) = channel::<MessageTo<TEngineStore>>();
-    // we send the transmitter to the remote receiver of our messages
+    let (remote_tx, rx) = channel::<MessageTo<Store64<Extension>>>();
+    // we send the transmitter to the remote receiver of our messages, i.e. the RunTime
     tx.send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
 
     let forward2pci = ReceiveBatch::new(kni.clone()).send(pci.clone());
@@ -519,7 +520,7 @@ pub fn setup_generator<FPL>(
 
         let c_recv_payload = |p: &mut Pdu, c: &mut Connection| {
             let mut b_fin = false;
-            f_set_payload(p, c, None, &mut b_fin);
+            set_payload_closure(p, c, None, &mut b_fin);
             if !b_fin {
                 c.inc_sent_payload_pkts();
                 p.headers_mut().tcp_mut(2).set_seq_num(c.seqn_nxt);
@@ -631,7 +632,7 @@ pub fn setup_generator<FPL>(
                     let mut b_fin = false;
                     cdata.client_port = c.port();
                     cdata.uuid = c.uid();
-                    f_set_payload(pdu, c, Some(cdata), &mut b_fin);
+                    set_payload_closure(pdu, c, Some(cdata), &mut b_fin);
                     /*
                     let pp = c.sent_payload_pkts();
                     if pp < 1 {
@@ -1121,7 +1122,7 @@ pub fn setup_generator<FPL>(
         group_index
     };
 
-    // process TCP traffic addressed to Proxy
+    // process TCP traffic addressed to us
     let mut l4groups = l2_input_stream.group_by(3, group_by_closure, sched, "L4-Groups".to_string(), uuid_l4groupby_clone);
 
     let pipe2kni = l4groups.get_group(2).unwrap().send(kni.clone());
@@ -1133,7 +1134,7 @@ pub fn setup_generator<FPL>(
     tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::Pipe2Kni))
         .unwrap();
 
-    let uuid_pipe2pic = install_task(sched, "Pipe2Pci", pipe2pci);
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pic, TaskType::Pipe2Pci))
+    let uuid_pipe2pci = install_task(sched, "Pipe2Pci", pipe2pci);
+    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pci, TaskType::Pipe2Pci))
         .unwrap();
 }

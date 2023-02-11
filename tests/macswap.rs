@@ -13,8 +13,8 @@ extern crate uuid;
 extern crate log;
 extern crate traffic_lib;
 
-use e2d2::interface::{ PortQueue,};
-use e2d2::scheduler::{ StandaloneScheduler, Scheduler, Runnable};
+use e2d2::interface::{PortQueue};
+use e2d2::scheduler::{StandaloneScheduler, Scheduler, Runnable};
 use e2d2::allocators::CacheAligned;
 use e2d2::operators::{ReceiveBatch, Batch, TransformBatch};
 

@@ -1,3 +1,5 @@
+#![feature(trait_alias)]
+
 extern crate ctrlc;
 extern crate e2d2;
 extern crate env_logger;
@@ -6,33 +8,30 @@ extern crate ipnet;
 extern crate separator;
 extern crate netfcts;
 extern crate bincode;
+extern crate rustyline;
+extern crate traffic_lib;
+extern crate clap;
 
 // Logging
 #[macro_use]
 extern crate log;
-extern crate traffic_lib;
-
 
 use std::arch::x86_64::_rdtsc;
-use e2d2::interface::{PmdPort, Pdu, HeaderStack};
+use e2d2::interface::{PmdPort, Pdu, HeaderStack, PciQueueType, KniQueueType};
 use e2d2::scheduler::StandaloneScheduler;
 
 use netfcts::comm::{MessageFrom, MessageTo};
 use netfcts::comm::PipelineId;
-use netfcts::system::get_mac_from_ifname;
 use netfcts::io::print_tcp_counters;
 use netfcts::conrecord::{ConRecord, HasTcpState, HasConData};
 #[cfg(feature = "profiling")]
 use netfcts::io::print_rx_tx_counters;
-use netfcts::tcp_common::{CData, tcp_payload_size};
-use netfcts::{strip_payload, RecordStore};
-use netfcts::recstore::TEngineStore;
-
+use netfcts::tcp_common::{CData, L234Data, tcp_payload_size};
+use netfcts::{strip_payload, RunConfiguration};
+use netfcts::recstore::{Extension, Store64};
 use netfcts::RunTime;
 
-use traffic_lib::{setup_pipelines, Connection, Configuration};
-
-use traffic_lib::L234Data;
+use traffic_lib::{setup_pipelines, Connection, Configuration, EngineMode, FnNetworkFunctionGraph, ProxyConnection};
 use traffic_lib::ReleaseCause;
 use traffic_lib::TcpState;
 
@@ -50,7 +49,12 @@ use std::cmp;
 
 use bincode::serialize_into;
 use separator::Separatable;
+use rustyline::Editor;
+use rustyline::error::ReadlineError;
+use clap::{Command, Arg, ArgAction};
 use e2d2::native::zcsi::rte_ethdev_api::{rte_eth_stats_get, rte_eth_stats};
+use traffic_lib::nfproxy::setup_delayed_proxy;
+use traffic_lib::nftraffic::setup_generator;
 
 
 fn print_performance_from_stamps(cpu_clock: u64, nr_connections: usize, start_stop_stamps: HashMap<PipelineId, (u64, u64)>) {
@@ -100,8 +104,8 @@ fn print_performance_from_stamps(cpu_clock: u64, nr_connections: usize, start_st
 }
 
 fn evaluate_records(
-    con_records_c: &mut Vec<(PipelineId, RecordStore<ConRecord>)>,
-    con_records_s: &mut Vec<(PipelineId, RecordStore<ConRecord>)>,
+    con_records_c: &mut Vec<(PipelineId, Store64<Extension>)>,
+    con_records_s: &mut Vec<(PipelineId, Store64<Extension>)>,
     cpu_clock: u64,
 ) {
     println!("\nperformance data derived from connection records:");
@@ -116,8 +120,8 @@ fn evaluate_records(
     let mut max_total;
     let mut total_connections = 0;
     {
-        let cc = &(con_records_c[0].1);
-        min_total = cc.iter().last().unwrap().clone();
+        let cc = (con_records_c[0].1).iter().last().unwrap();
+        min_total = (cc.0.clone(), cc.1.clone());
         max_total = min_total.clone();
     }
 
@@ -126,10 +130,10 @@ fn evaluate_records(
     let mut completed_count_s = 0;
     for (_p, c_records_server) in con_records_s {
         c_records_server.iter().enumerate().for_each(|(_i, c)| {
-            if c.release_cause() == ReleaseCause::ActiveClose && c.states().last().unwrap() == &TcpState::Closed {
+            if c.0.release_cause() == ReleaseCause::ActiveClose && c.0.states().last().unwrap() == &TcpState::Closed {
                 completed_count_s += 1
             };
-            by_uuid.insert(c.uid(), c);
+            by_uuid.insert(c.0.uid(), c.0);
         });
     }
 
@@ -137,15 +141,15 @@ fn evaluate_records(
         f.write_all(format!("Pipeline {}:\n", p).as_bytes())
             .expect("cannot write c_records");
         let mut completed_count_c = 0;
-        c_records_client.sort_by(|a, b| a.port().cmp(&b.port()));
+        c_records_client.sort_0_by(|a, b| a.port().cmp(&b.port()));
         if c_records_client.len() > 0 {
             total_connections += c_records_client.len();
             let mut min = c_records_client.iter().last().unwrap();
             let mut max = min;
             c_records_client.iter().enumerate().for_each(|(i, c)| {
-                let uuid = c.uid();
+                let uuid = c.0.uid();
                 let c_server = by_uuid.remove(&uuid);
-                let line = format!("{:6}: {}\n", i, c);
+                let line = format!("{:6}: {}\n", i, c.0);
                 f.write_all(line.as_bytes()).expect("cannot write c_records");
                 if c_server.is_some() {
                     let c_server = c_server.unwrap();
@@ -164,7 +168,7 @@ fn evaluate_records(
                         c_server.recv_payload_packets(),
                         c_server.states(),
                         c_server.release_cause(),
-                        (c_server.get_first_stamp().unwrap() - c.get_first_stamp().unwrap()).separated_string(),
+                        (c_server.get_first_stamp().unwrap() - c.0.get_first_stamp().unwrap()).separated_string(),
                         c_server
                             .deltas_to_base_stamp()
                             .iter()
@@ -173,19 +177,20 @@ fn evaluate_records(
                     );
                     f.write_all(line.as_bytes()).expect("cannot write c_records");
                 }
-                if (c.release_cause() == ReleaseCause::PassiveClose || c.release_cause() == ReleaseCause::ActiveClose)
-                    && c.states().last().unwrap() == &TcpState::Closed
+                if (c.0.release_cause() == ReleaseCause::PassiveClose || c.0.release_cause() == ReleaseCause::ActiveClose)
+                    && c.0.states().last().unwrap() == &TcpState::Closed
                 {
                     completed_count_c += 1
                 }
-                if c.get_first_stamp().unwrap_or(u64::MAX) < min.get_first_stamp().unwrap_or(u64::MAX) {
+                if c.0.get_first_stamp().unwrap_or(u64::MAX) < min.0.get_first_stamp().unwrap_or(u64::MAX) {
                     min = c
                 }
-                if c.get_last_stamp().unwrap_or(0) > max.get_last_stamp().unwrap_or(0) {
+                if c.0.get_last_stamp().unwrap_or(0) > max.0.get_last_stamp().unwrap_or(0) {
                     max = c
                 }
-                if i == (c_records_client.len() - 1) && min.get_first_stamp().is_some() && max.get_last_stamp().is_some() {
-                    let total = max.get_last_stamp().unwrap() - min.get_first_stamp().unwrap();
+                if i == (c_records_client.len() - 1) && min.0.get_first_stamp().is_some() && max.0.get_last_stamp().is_some()
+                {
+                    let total = max.0.get_last_stamp().unwrap() - min.0.get_first_stamp().unwrap();
                     println!(
                         "{} total used cycles = {}, per connection = {}",
                         p,
@@ -194,11 +199,11 @@ fn evaluate_records(
                     );
                 }
             });
-            if min.get_first_stamp().unwrap_or(u64::MAX) < min_total.get_first_stamp().unwrap_or(u64::MAX) {
-                min_total = min.clone()
+            if min.0.get_first_stamp().unwrap_or(u64::MAX) < min_total.0.get_first_stamp().unwrap_or(u64::MAX) {
+                min_total = (min.0.clone(), min.1.clone())
             }
-            if max.get_last_stamp().unwrap_or(0) > max_total.get_last_stamp().unwrap_or(0) {
-                max_total = max.clone()
+            if max.0.get_last_stamp().unwrap_or(0) > max_total.0.get_last_stamp().unwrap_or(0) {
+                max_total = (max.0.clone(), max.1.clone())
             }
         }
 
@@ -213,8 +218,8 @@ fn evaluate_records(
     });
 
 
-    if min_total.get_first_stamp().is_some() && max_total.get_last_stamp().is_some() {
-        let total = max_total.get_last_stamp().unwrap() - min_total.get_first_stamp().unwrap();
+    if min_total.0.get_first_stamp().is_some() && max_total.0.get_last_stamp().is_some() {
+        let total = max_total.0.get_last_stamp().unwrap() - min_total.0.get_first_stamp().unwrap();
         println!(
             "max used cycles over all pipelines = {}, per connection = {} ({} cps)",
             total.separated_string(),
@@ -226,51 +231,18 @@ fn evaluate_records(
     f.flush().expect("cannot flush BufWriter");
 }
 
-pub fn main() {
-    env_logger::init();
+trait NFGfn = Fn(
+        i32,
+        Option<PciQueueType>,
+        Option<KniQueueType>,
+        &mut StandaloneScheduler,
+        RunConfiguration<Configuration, Store64<Extension>>,
+    ) + Clone;
 
-    let mut run_time: RunTime<Configuration, TEngineStore> = match RunTime::init() {
-        Ok(run_time) => run_time,
-        Err(err) => panic!("failed to initialize RunTime {}", err),
-    };
-    info!("Starting TrafficEngine ..");
-
-    // setup flowdirector for physical ports:
-    run_time.setup_flowdirector().expect("failed to setup flowdirector");
-
-    let run_configuration = run_time.run_configuration.clone();
-
-    // number of payloads sent, after which the connection is closed
-    let fin_by_client = run_configuration.engine_configuration.engine.fin_by_client.unwrap_or(1000);
-    let _fin_by_server = run_configuration.engine_configuration.engine.fin_by_server.unwrap_or(1);
-
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        info!("received SIGINT or SIGTERM");
-        r.store(false, Ordering::SeqCst);
-    })
-    .expect("error setting Ctrl-C handler");
-
-    let l234data: Vec<L234Data> = run_configuration
-        .engine_configuration
-        .targets
-        .iter()
-        .enumerate()
-        .map(|(i, srv_cfg)| L234Data {
-            mac: srv_cfg
-                .mac
-                .unwrap_or_else(|| get_mac_from_ifname(srv_cfg.linux_if.as_ref().unwrap()).unwrap()),
-            ip: u32::from(srv_cfg.ip),
-            port: srv_cfg.port,
-            server_id: srv_cfg.id.clone(),
-            index: i,
-        })
-        .collect();
-
-
-    let fin_by_client_clone = fin_by_client.clone();
-    let f_set_payload = Box::new(
+/// return the closure which creates the network function graph for the tcp generator (server and client)
+fn get_tcp_generator_nfg(fin_by_client: usize) -> impl NFGfn {
+    // set_payload_closure sets up the tcp payload packet in the tcp client
+    let set_payload_closure = Box::new(
         move |p: &mut Pdu, c: &mut Connection, cdata: Option<CData>, b_fin: &mut bool| {
             let pp = c.sent_payload_pkts();
             if pp < 1 {
@@ -288,11 +260,11 @@ pub fn main() {
                 p.add_to_payload_tail(sz).expect("insufficient tail room");
                 p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
                 return tcp_payload_size(p);
-            } else if pp == fin_by_client_clone && c.state() < TcpState::CloseWait {
+            } else if pp == fin_by_client && c.state() < TcpState::CloseWait {
                 strip_payload(p);
                 *b_fin = true;
                 return 0;
-            } else if pp < fin_by_client_clone && c.state() < TcpState::CloseWait {
+            } else if pp < fin_by_client && c.state() < TcpState::CloseWait {
                 strip_payload(p);
                 let stamp = unsafe { _rdtsc() };
                 let buf = stamp.to_be_bytes();
@@ -306,43 +278,218 @@ pub fn main() {
         },
     );
 
+    move |core: i32,
+          pci: Option<PciQueueType>,
+          kni: Option<KniQueueType>,
+          s: &mut StandaloneScheduler,
+          config: RunConfiguration<Configuration, Store64<Extension>>| {
+        if pci.is_some() && kni.is_some() {
+            setup_generator(core, pci.unwrap(), kni.unwrap(), s, config, set_payload_closure.clone());
+        }
+    }
+}
+
+/// return the closure which creates the network function graph for the delayed tcp proxy
+fn get_delayed_tcp_proxy_nfg() -> impl NFGfn {
+    // this closure may modify the payload of client to server packets in a TCP connection
+    let process_payload_c_s_closure = |_c: &mut ProxyConnection, _payload: &mut [u8], _tailroom: usize| {};
+
+    // this closure selects the target server to use for a new incoming TCP connection received by the tcp proxy
+    let select_target_by_payload_closure = move |c: &mut ProxyConnection, servers: &Vec<L234Data>| {
+        //let cdata: CData = serde_json::from_slice(&c.payload).expect("cannot deserialize CData");
+        //no_calls +=1;
+        let cdata: CData = bincode::deserialize::<CData>(c.payload_packet.as_ref().unwrap().get_payload(2))
+            .expect("cannot deserialize CData");
+        //info!("cdata = {:?}", cdata);
+        for (i, l234) in servers.iter().enumerate() {
+            if l234.port == cdata.reply_socket.port() && l234.ip == u32::from(*cdata.reply_socket.ip()) {
+                c.set_server_index(i as u8);
+                break;
+            }
+        }
+    };
+
+    move |core: i32,
+          pci: Option<PciQueueType>,
+          kni: Option<KniQueueType>,
+          s: &mut StandaloneScheduler,
+          config: RunConfiguration<Configuration, Store64<Extension>>| {
+        if pci.is_some() && kni.is_some() {
+            setup_delayed_proxy(
+                core,
+                pci.unwrap(),
+                kni.unwrap(),
+                s,
+                config,
+                select_target_by_payload_closure.clone(),
+                process_payload_c_s_closure.clone(),
+            );
+        }
+    }
+}
+
+pub fn main() {
+    env_logger::init();
+    info!("Reading configuration ..");
+    let mut runtime: RunTime<Configuration, Store64<Extension>> = match RunTime::init() {
+        Ok(run_time) => run_time,
+        Err(err) => panic!("failed to initialize RunTime {}", err),
+    };
+
+    let mode = runtime
+        .run_configuration
+        .engine_configuration
+        .mode
+        .as_ref()
+        .unwrap_or(&EngineMode::TrafficGenerator)
+        .clone();
+
+    info!("Starting {:?} ...\n", mode);
+
+    // setup flowdirector for physical ports:
+    runtime.setup_flowdirector().expect("failed to setup flowdirector");
+
+    let run_configuration = runtime.run_configuration.clone();
+
+    // number of payloads sent, after which the connection is closed
+    let fin_by_client = run_configuration.engine_configuration.engine.fin_by_client.unwrap_or(1000);
+    let _fin_by_server = run_configuration.engine_configuration.engine.fin_by_server.unwrap_or(1);
+
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        info!("received SIGINT or SIGTERM");
+        r.store(false, Ordering::SeqCst);
+    })
+    .expect("error setting Ctrl-C handler");
+
     let nr_connections = run_configuration.engine_configuration.test_size.unwrap_or(128);
 
-    run_time.start_schedulers().expect("cannot start schedulers");
-
+    runtime.start_schedulers().expect("cannot start schedulers");
     let run_configuration_cloned = run_configuration.clone();
 
-    run_time
-        .install_pipeline_on_cores(Box::new(
-            move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
-                setup_pipelines(
-                    core,
-                    pmd_ports,
-                    s,
-                    run_configuration_cloned.clone(),
-                    l234data.clone(),
-                    f_set_payload.clone(),
-                );
-            },
-        ))
-        .expect("cannot install pipelines");
+    match mode {
+        EngineMode::TrafficGenerator => {
+            runtime
+                .install_pipeline_on_cores(Box::new(
+                    move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
+                        setup_pipelines(
+                            core,
+                            pmd_ports,
+                            s,
+                            run_configuration_cloned.clone(),
+                            Box::new(get_tcp_generator_nfg(fin_by_client)).clone(),
+                        );
+                    },
+                ))
+                .expect("cannot install pipelines for TrafficGenerator");
+        }
+        EngineMode::DelayedProxy => {
+            runtime
+                .install_pipeline_on_cores(Box::new(
+                    move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
+                        setup_pipelines(
+                            core,
+                            pmd_ports,
+                            s,
+                            run_configuration_cloned.clone(),
+                            Box::new(get_delayed_tcp_proxy_nfg()).clone(),
+                        );
+                    },
+                ))
+                .expect("cannot install pipelines for DelayedProxy");
+        }
+        EngineMode::SimpleProxy => error!("simple tcp proxy still not implemented"),
+    };
 
-    let cores = run_time.context().unwrap().active_cores.clone();
+    let cores = runtime.context().unwrap().active_cores.clone();
+    for core in &cores {
+        println!("core = {}", core);
+    }
 
     // start the run_time
-    run_time.start();
+    runtime.start();
 
     // give threads some time to do initialization work
     thread::sleep(Duration::from_millis(1000 as u64));
 
-    let (mtx, reply_mrx) = run_time.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
     // start generator by setting all tasks on scheduler threads to ready state
     mtx.send(MessageFrom::StartEngine).unwrap();
 
     //main loop
-    println!("press ctrl-c to terminate TrafficEngine ...");
-    while running.load(Ordering::SeqCst) {
-        thread::sleep(Duration::from_millis(200 as u64)); // Sleep for a bit
+    if run_configuration.b_interactive {
+        let cmd_print = Command::new("print")
+            .arg(
+                Arg::new("performance")
+                    .long("performance")
+                    .short('p')
+                    .help("performance data of pipeline components")
+                    .action(ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("rxtx")
+                    .long("rxtx")
+                    .help(" rxtx of pipeline components")
+                    .action(ArgAction::SetTrue),
+            );
+        let cmd_quit = Command::new("quit");
+        let shim_cmd = Command::new(":").subcommand(cmd_print).subcommand(cmd_quit);
+        let mut rl = Editor::<()>::new().unwrap();
+        println!("enter commands or press ctrl-c to terminate TrafficEngine ...");
+        loop {
+            let readline = rl.readline(">> ");
+            match readline {
+                Ok(line) => {
+                    rl.add_history_entry(line.as_str());
+                    let shim_line = ": ".to_owned() + &line;
+                    let matches = shim_cmd.clone().try_get_matches_from(shim_line.split_whitespace());
+                    if let Err(err) = matches {
+                        println!("{}", err);
+                        continue;
+                    }
+                    let matches = matches.unwrap();
+                    let sub_matches = matches.subcommand_matches("print");
+                    match sub_matches {
+                        Some(arg_matches) => {
+                            if arg_matches.get_flag("performance") {
+                                // request performance data
+                                mtx.send(MessageFrom::PrintPerformance(cores.clone())).unwrap();
+                                thread::sleep(Duration::from_millis(100 as u64));
+                            }
+                            if arg_matches.get_flag("rxtx") {
+                                mtx.send(MessageFrom::PrintPerformance(cores.clone())).unwrap();
+                                thread::sleep(Duration::from_millis(100 as u64));
+                            }
+                        }
+                        None => break,
+                    }
+                    let sub_matches = matches.subcommand_matches("quit");
+                    match sub_matches {
+                        Some(_) => break,
+                        None => continue,
+                    }
+                }
+                Err(ReadlineError::Interrupted) => {
+                    println!("CTRL-C");
+                    break;
+                }
+                Err(ReadlineError::Eof) => {
+                    println!("CTRL-D");
+                    break;
+                }
+                Err(err) => {
+                    println!("Error: {:?}", err);
+                    break;
+                }
+            }
+        }
+    } else {
+        println!("press ctrl-c to terminate TrafficEngine ...");
+        while running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(200 as u64)); // Sleep for a bit
+        }
     }
 
     // request performance data

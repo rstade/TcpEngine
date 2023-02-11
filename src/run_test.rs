@@ -13,19 +13,17 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::collections::HashMap;
 use std::io::{Read, Write, BufWriter};
 use std::fs::File;
-use std::vec::Vec;
 use std::process;
 
 use bincode::{serialize_into};
 
-use e2d2::interface::{PmdPort, Pdu, FlowSteeringMode};
+use e2d2::interface::{PmdPort, Pdu, FlowSteeringMode, PciQueueType, KniQueueType};
 use e2d2::scheduler::StandaloneScheduler;
 
 use separator::Separatable;
-use netfcts::RunTime;
+use netfcts::{RunConfiguration, RunTime};
 use netfcts::comm::PipelineId;
 use netfcts::conrecord::HasTcpState;
-use netfcts::system::get_mac_from_ifname;
 use netfcts::io::print_tcp_counters;
 #[cfg(feature = "profiling")]
 use netfcts::io::print_rx_tx_counters;
@@ -33,11 +31,12 @@ use netfcts::strip_payload;
 use netfcts::tcp_common::tcp_payload_size;
 
 use setup_pipelines;
-use {CData, L234Data, Connection, Configuration};
+use {CData, Connection, Configuration};
 use {MessageFrom, MessageTo};
 use ReleaseCause;
 use {TcpState, TcpStatistics};
-use netfcts::recstore::TEngineStore;
+use netfcts::recstore::{Extension, Store64};
+use nftraffic::setup_generator;
 
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,6 +44,27 @@ pub enum TestType {
     Client,
     Server,
 }
+/*
+trait TcpGeneratorNFG:
+    Fn(
+        i32,
+        Option<PciQueueType>,
+        Option<KniQueueType>,
+        &mut StandaloneScheduler,
+        RunConfiguration<Configuration, TEngineStore>,
+    ) -> ()
+    + Sized
+    + Send
+    + Sync
+    + Clone
+    + 'static
+{
+}
+
+fn get_tcp_generator_nfg(fin_by_client: usize) -> Box<dyn  TcpGeneratorNFG<Output=()>> {
+
+};
+*/
 
 // we use this function for the integration tests
 pub fn run_test(test_type: TestType) {
@@ -54,21 +74,21 @@ pub fn run_test(test_type: TestType) {
     // cannot directly read toml file from command line, as cargo test owns it. Thus we take a detour and read it from a file.
     const INDIRECTION_FILE: &str = "./tests/toml_file.txt";
 
-    let mut run_time: RunTime<Configuration, TEngineStore> = match RunTime::init_indirectly(INDIRECTION_FILE) {
+    let mut runtime: RunTime<Configuration, Store64<Extension>> = match RunTime::init_indirectly(INDIRECTION_FILE) {
         Ok(run_time) => run_time,
         Err(err) => panic!("failed to initialize RunTime {}", err),
     };
 
     // setup flowdirector for physical ports:
-    run_time.setup_flowdirector().expect("failed to setup flowdirector");
+    runtime.setup_flowdirector().expect("failed to setup flowdirector");
 
-    let run_configuration = run_time.run_configuration.clone();
+    let run_configuration = runtime.run_configuration.clone();
     let configuration = &run_configuration.engine_configuration;
 
     if configuration.test_size.is_none() {
         error!(
             "missing parameter 'test_size' in configuration file {}",
-            run_time.toml_filename()
+            runtime.toml_filename()
         );
         process::exit(1);
     };
@@ -85,43 +105,32 @@ pub fn run_test(test_type: TestType) {
     })
     .expect("error setting Ctrl-C handler");
 
-    let l234data: Vec<L234Data> = configuration
-        .targets
-        .iter()
-        .enumerate()
-        .map(|(i, srv_cfg)| L234Data {
-            mac: srv_cfg
-                .mac
-                .unwrap_or_else(|| get_mac_from_ifname(srv_cfg.linux_if.as_ref().unwrap()).unwrap()),
-            ip: u32::from(srv_cfg.ip),
-            port: srv_cfg.port,
-            server_id: srv_cfg.id.clone(),
-            index: i,
-        })
-        .collect();
+    runtime.start_schedulers().expect("cannot start schedulers");
+    let run_configuration_cloned = run_configuration.clone();
 
-    let fin_by_client_clone = fin_by_client.clone();
     let f_set_payload = Box::new(
-        move |p: &mut Pdu, c: &mut Connection, _unused: Option<CData>, b_fin: &mut bool| {
+        move |p: &mut Pdu, c: &mut Connection, cdata: Option<CData>, b_fin: &mut bool| {
             let pp = c.sent_payload_pkts();
             if pp < 1 {
                 // this is the first payload packet sent by client, headers are already prepared with client and server addresses and ports
-                let sock = SocketAddrV4::new(Ipv4Addr::from(p.headers().ip(1).src()), p.headers().tcp(2).src_port());
-                let cdata = CData::new(sock, c.port(), c.uid());
+                let sz;
                 let mut buf = [0u8; 16];
-                serialize_into(&mut buf[..], &cdata).expect("cannot serialize");
-                //let buf = serialize(&cdata).unwrap();
-                let sz = buf.len();
-                let ip_sz = p.headers().ip(1).length();
+                {
+                    let ip = p.headers_mut().ip_mut(1);
+                    serialize_into(&mut buf[..], &cdata.unwrap()).expect("cannot serialize");
+                    //let buf = serialize(&cdata).unwrap();
+                    sz = buf.len();
+                    let ip_sz = ip.length();
+                    ip.set_length(ip_sz + sz as u16);
+                }
                 p.add_to_payload_tail(sz).expect("insufficient tail room");
-                p.headers_mut().ip_mut(1).set_length(ip_sz + sz as u16);
                 p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
                 return tcp_payload_size(p);
-            } else if pp == fin_by_client_clone && c.state() < TcpState::CloseWait {
+            } else if pp == fin_by_client && c.state() < TcpState::CloseWait {
                 strip_payload(p);
                 *b_fin = true;
                 return 0;
-            } else if pp < fin_by_client_clone && c.state() < TcpState::CloseWait {
+            } else if pp < fin_by_client && c.state() < TcpState::CloseWait {
                 strip_payload(p);
                 let stamp = unsafe { _rdtsc() };
                 let buf = stamp.to_be_bytes();
@@ -135,11 +144,19 @@ pub fn run_test(test_type: TestType) {
         },
     );
 
-    run_time.start_schedulers().expect("cannot start schedulers");
+    let tcp_generator_nfg = Box::new(
+        move |core: i32,
+              pci: Option<PciQueueType>,
+              kni: Option<KniQueueType>,
+              s: &mut StandaloneScheduler,
+              config: RunConfiguration<Configuration, Store64<Extension>>| {
+            if pci.is_some() && kni.is_some() {
+                setup_generator(core, pci.unwrap(), kni.unwrap(), s, config, f_set_payload.clone());
+            }
+        },
+    );
 
-    let run_configuration_cloned = run_configuration.clone();
-
-    run_time
+    runtime
         .install_pipeline_on_cores(Box::new(
             move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
                 setup_pipelines(
@@ -147,17 +164,17 @@ pub fn run_test(test_type: TestType) {
                     pmd_ports,
                     s,
                     run_configuration_cloned.clone(),
-                    l234data.clone(),
-                    f_set_payload.clone(),
+                    tcp_generator_nfg.clone(),
                 );
             },
         ))
         .expect("cannot install pipelines");
 
+
     let mut pci = None;
     let mut kni = None;
 
-    for port in run_time
+    for port in runtime
         .context()
         .expect("no context")
         .ports
@@ -170,7 +187,7 @@ pub fn run_test(test_type: TestType) {
         } else {
             pci = Some(port.clone());
             kni = Some(
-                run_time
+                runtime
                     .context()
                     .unwrap()
                     .ports
@@ -192,11 +209,11 @@ pub fn run_test(test_type: TestType) {
     );
     let rx_queues = pci.as_ref().unwrap().rx_cores.as_ref().unwrap().len() as u16;
     let rfs_mode = pci.as_ref().unwrap().flow_steering_mode().unwrap_or(FlowSteeringMode::Port);
-    let cores = run_time.context().unwrap().active_cores.clone();
+    let cores = runtime.context().unwrap().active_cores.clone();
     debug!("rx_queues = { }, port mask = 0x{:x}", rx_queues, port_mask);
 
     // start the controller
-    run_time.start();
+    runtime.start();
 
     // give threads some time to do initialization work
     thread::sleep(Duration::from_millis(1000 as u64));
@@ -242,7 +259,7 @@ pub fn run_test(test_type: TestType) {
     }
     // start generator
 
-    let (mtx, reply_mrx) = run_time.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
     mtx.send(MessageFrom::StartEngine).unwrap();
     thread::sleep(Duration::from_millis(2000 as u64));
 
@@ -361,19 +378,19 @@ pub fn run_test(test_type: TestType) {
                 match c_records {
                     Some(c_records) if c_records.len() > 0 => {
                         let mut completed_count = 0;
-                        let mut min = c_records.iter().last().unwrap();
+                        let mut min = c_records.iter().last().unwrap().0;
                         let mut max = min;
                         c_records.iter().enumerate().for_each(|(i, c)| {
-                            let line = format!("{:6}: {}\n", i, c);
+                            let line = format!("{:6}: {}\n", i, c.0);
                             f.write_all(line.as_bytes()).expect("cannot write c_records");
-                            if c.states().last().unwrap() == &TcpState::Closed {
+                            if c.0.states().last().unwrap() == &TcpState::Closed {
                                 completed_count += 1
                             }
-                            if c.get_first_stamp().unwrap_or(u64::MAX) < min.get_first_stamp().unwrap_or(u64::MAX) {
-                                min = c
+                            if c.0.get_first_stamp().unwrap_or(u64::MAX) < min.get_first_stamp().unwrap_or(u64::MAX) {
+                                min = c.0
                             }
-                            if c.get_last_stamp().unwrap_or(0) > max.get_last_stamp().unwrap_or(0) {
-                                max = c
+                            if c.0.get_last_stamp().unwrap_or(0) > max.get_last_stamp().unwrap_or(0) {
+                                max = c.0
                             }
                             if i == (c_records.len() - 1)
                                 && min.get_first_stamp().is_some()
@@ -402,10 +419,11 @@ pub fn run_test(test_type: TestType) {
                 f.write_all(format!("Pipeline {}:\n", p).as_bytes())
                     .expect("cannot write c_records");
                 c_records.as_ref().unwrap().iter().enumerate().for_each(|(i, c)| {
-                    let line = format!("{:6}: {}\n", i, c);
+                    let line = format!("{:6}: {}\n", i, c.0);
                     f.write_all(line.as_bytes()).expect("cannot write c_records");
-                    if (c.release_cause() == ReleaseCause::PassiveClose || c.release_cause() == ReleaseCause::ActiveClose)
-                        && c.states().last().unwrap() == &TcpState::Closed
+                    if (c.0.release_cause() == ReleaseCause::PassiveClose
+                        || c.0.release_cause() == ReleaseCause::ActiveClose)
+                        && c.0.states().last().unwrap() == &TcpState::Closed
                     {
                         completed_count += 1
                     };

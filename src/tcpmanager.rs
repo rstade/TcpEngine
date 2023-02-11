@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::collections::VecDeque;
 //use std::collections::HashMap;
 //use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering, };
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::fmt;
 use std::mem;
 use std::cell::RefCell;
@@ -14,10 +14,10 @@ use netfcts::timer_wheel::TimerWheel;
 use PipelineId;
 
 use netfcts::tcp_common::*;
-use netfcts::conrecord::{ConRecord, HasTcpState};
+use netfcts::conrecord::HasTcpState;
 use netfcts::utils::shuffle_ports;
-use netfcts::{RecordStore, ConRecordOperations};
-use netfcts::recstore::TEngineStore;
+use netfcts::{Store64, ConRecordOperations};
+use netfcts::recstore::{Extension, SimpleStore};
 
 
 //#[repr(align(64))]
@@ -60,7 +60,7 @@ impl Connection {
     }
 
     #[inline]
-    fn initialize_with_details(&mut self, sock: Option<(u32, u16)>, role: TcpRole, store: Rc<RefCell<TEngineStore>>) {
+    fn initialize_with_details(&mut self, sock: Option<(u32, u16)>, role: TcpRole, store: Rc<RefCell<Store64<Extension>>>) {
         self.initialize(sock, role);
         if self.record.is_none() {
             self.record = Some(Box::new(DetailedRecord::new(store)));
@@ -218,7 +218,7 @@ impl<'a> Clone for Connection {
 
 pub struct DetailedRecord {
     con_rec: Option<usize>,
-    store: Option<Rc<RefCell<TEngineStore>>>,
+    store: Option<Rc<RefCell<Store64<Extension>>>>,
 }
 
 
@@ -228,7 +228,7 @@ impl DetailedRecord {
         self.store().borrow_mut().get_mut(self.con_rec()).init(role, 0, client_sock);
     }
 
-    fn new(store: Rc<RefCell<TEngineStore>>) -> DetailedRecord {
+    fn new(store: Rc<RefCell<Store64<Extension>>>) -> DetailedRecord {
         let con_rec = store.borrow_mut().get_next_slot();
         DetailedRecord {
             con_rec: Some(con_rec),
@@ -236,7 +236,7 @@ impl DetailedRecord {
         }
     }
 
-    fn re_new(&mut self, store: Rc<RefCell<TEngineStore>>) {
+    fn re_new(&mut self, store: Rc<RefCell<Store64<Extension>>>) {
         let con_rec = store.borrow_mut().get_next_slot();
         self.con_rec = Some(con_rec);
         self.store = Some(store);
@@ -263,9 +263,9 @@ impl fmt::Debug for DetailedRecord {
 }
 
 
-impl ConRecordOperations<TEngineStore> for DetailedRecord {
+impl ConRecordOperations<Store64<Extension>> for DetailedRecord {
     #[inline]
-    fn store(&self) -> &Rc<RefCell<TEngineStore>> {
+    fn store(&self) -> &Rc<RefCell<Store64<Extension>>> {
         self.store.as_ref().unwrap()
     }
 
@@ -289,7 +289,7 @@ impl fmt::Display for Connection {
 pub static GLOBAL_MANAGER_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub struct ConnectionManagerC {
-    c_record_store: Option<Rc<RefCell<RecordStore<ConRecord>>>>,
+    c_record_store: Option<Rc<RefCell<Store64<Extension>>>>,
     free_ports: VecDeque<u16>,
     ready: VecDeque<u16>,
     /// min number of free ports
@@ -319,7 +319,7 @@ impl ConnectionManagerC {
         let port_mask = pci.port.get_tcp_dst_port_mask();
         let max_tcp_port: u16 = tcp_port_base + !port_mask;
         let store = if detailed_records {
-            Some(Rc::new(RefCell::new(RecordStore::with_capacity(MAX_RECORDS))))
+            Some(Rc::new(RefCell::new(Store64::with_capacity(MAX_RECORDS))))
         } else {
             None
         };
@@ -512,7 +512,7 @@ impl ConnectionManagerC {
                 .borrow()
                 .iter()
                 .enumerate()
-                .for_each(|(i, c)| debug!("{:6}: {}", i, c));
+                .for_each(|(i, c)| debug!("{:6}: {}", i, c.0));
             info!(
                 "{}: {:6} open connections",
                 self.pipeline_id,
@@ -528,10 +528,10 @@ impl ConnectionManagerC {
         */
     }
 
-    pub fn fetch_c_records(&mut self) -> Option<RecordStore<ConRecord>> {
+    pub fn fetch_c_records(&mut self) -> Option<Store64<Extension>> {
         // we are "moving" the con_records out, and replace it with a new one
         if self.c_record_store.is_some() {
-            let new_store = Rc::new(RefCell::new(RecordStore::with_capacity(MAX_RECORDS)));
+            let new_store = Rc::new(RefCell::new(Store64::with_capacity(MAX_RECORDS)));
             let store = mem::replace(self.c_record_store.as_mut().unwrap(), new_store);
             let strong_count = Rc::strong_count(&store);
             debug!("cm_s.fetch_c_records: strong_count= { }", strong_count);
@@ -589,11 +589,11 @@ impl ConnectionManagerC {
     }
 }
 
-use netfcts::utils::Sock2Index as Sock2Index;
+use netfcts::utils::Sock2Index;
 use std::cmp;
 
 pub struct ConnectionManagerS {
-    c_record_store: Option<Rc<RefCell<RecordStore<ConRecord>>>>,
+    c_record_store: Option<Rc<RefCell<Store64<Extension>>>>,
     sock2index: Sock2Index,
     //sock2index: HashMap<(u32,u16), u16>,
     //sock2index: BTreeMap<(u32,u16), u16>,
@@ -604,7 +604,7 @@ pub struct ConnectionManagerS {
 impl ConnectionManagerS {
     pub fn new(detailed_records: bool) -> ConnectionManagerS {
         let store = if detailed_records {
-            Some(Rc::new(RefCell::new(RecordStore::with_capacity(MAX_RECORDS))))
+            Some(Rc::new(RefCell::new(Store64::with_capacity(MAX_RECORDS))))
         } else {
             None
         };
@@ -725,10 +725,10 @@ impl ConnectionManagerS {
         }
     }
 
-    pub fn fetch_c_records(&mut self) -> Option<RecordStore<ConRecord>> {
+    pub fn fetch_c_records(&mut self) -> Option<Store64<Extension>> {
         if self.c_record_store.is_some() {
             // we are "moving" the con_records out, and replace it with a new one
-            let new_store = Rc::new(RefCell::new(RecordStore::with_capacity(MAX_RECORDS)));
+            let new_store = Rc::new(RefCell::new(Store64::with_capacity(MAX_RECORDS)));
             let store = mem::replace(self.c_record_store.as_mut().unwrap(), new_store);
             let strong_count = Rc::strong_count(&store);
             debug!("cm_s.fetch_c_records: strong_count= { }", strong_count);

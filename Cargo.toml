@@ -1,6 +1,6 @@
 [package]
 name = "trafficengine"
-version = "0.2.11"
+version = "0.3.1"
 authors = ["Rainer Stademann <rainer.stademann@silverengine.de>"]
 
 [lib]
@@ -14,8 +14,8 @@ path = "src/bin.rs"
 
 [dependencies]
 # we are using here e2de from branch e2d2-rs-v1 of https://github.com/rstade/NetBricks
-e2d2 = { version = "=1.0.7", path = "../../work/NetBricks/framework", features = ["performance"] }
-netfcts={ version="0.2.2", path = "../netfcts" }
+e2d2 = { version = "=1.0.8", path = "../NetBricks/framework", features = ["performance"] }
+netfcts={ version="0.2.3", path = "../netfcts" }
 fnv = "*"
 log = ">=0.4"
 env_logger = ">=0.5"
@@ -25,12 +25,13 @@ toml = "~0.4"
 separator =  ">= 0.3"
 serde = "1.0"
 serde_derive = ">=1.0"
-eui48 = { version= ">=0.4", features=["serde"] }
+eui48 = { git= "https://github.com/readysettech/eui48.git", version= ">=1.1", features=["serde"] , default-features= false}
 uuid = { version = ">=0.7", features = ["v4", "serde"] }
 bincode = "*"
 serde_json = "*"
 ipnet = ">=1.0"
-
+rustyline = "10.1.1"
+clap = "4.1"
 
 [features]
 profiling =[]

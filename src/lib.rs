@@ -22,37 +22,65 @@ extern crate ipnet;
 extern crate core;
 
 pub mod nftraffic;
+pub mod nfproxy;
 pub mod run_test;
-mod cmanager;
+mod tcpmanager;
+pub mod proxymanager;
 
 pub use netfcts::tcp_common::{CData, L234Data, ReleaseCause, UserData, TcpRole, TcpState, TcpCounter, TcpStatistics};
 pub use netfcts::conrecord::ConRecord;
-pub use netfcts::recstore::TEngineStore;
+//pub use netfcts::recstore::TEngineStore;
 
-pub use cmanager::{Connection};
+pub use tcpmanager::{Connection};
+pub use proxymanager::ProxyConnection;
 
 use eui48::MacAddress;
 use uuid::Uuid;
 
 use e2d2::scheduler::*;
-use e2d2::interface::{PmdPort, Pdu};
+use e2d2::interface::{PmdPort, Pdu, PciQueueType, KniQueueType};
 
-use nftraffic::setup_generator;
 use netfcts::tasks::*;
 use netfcts::comm::{MessageFrom, MessageTo, PipelineId};
-use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration};
+use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, Store64};
 use netfcts::utils::Timeouts;
 
 use std::net::Ipv4Addr;
 use std::collections::HashMap;
 use std::sync::Arc;
+use netfcts::recstore::Extension;
+use netfcts::system::get_mac_from_ifname;
 
 pub trait FnPayload =
     Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool) -> usize + Sized + Send + Sync + Clone + 'static;
 
+pub trait FnNetworkFunctionGraph = Fn(
+        i32,
+        Option<PciQueueType>,
+        Option<KniQueueType>,
+        &mut StandaloneScheduler,
+        RunConfiguration<Configuration, Store64<Extension>>,
+    ) -> ()
+    + Sized
+    + Send
+    + Sync
+    + Clone
+    + 'static;
+
+pub trait FnProxySelectServer = Fn(&mut ProxyConnection, &Vec<L234Data>) + Sized + Send + Sync + Clone + 'static;
+pub trait FnProxyPayload = Fn(&mut ProxyConnection, &mut [u8], usize) + Sized + Send + Sync + Clone + 'static;
+
+#[derive(Deserialize, Debug, Clone)]
+pub enum EngineMode {
+    SimpleProxy,
+    DelayedProxy,
+    TrafficGenerator,
+}
+
 
 #[derive(Deserialize, Clone)]
 pub struct Configuration {
+    pub mode: Option<EngineMode>,
     pub targets: Vec<TargetConfig>,
     pub engine: EngineConfig,
     pub test_size: Option<usize>,
@@ -85,15 +113,18 @@ pub struct TargetConfig {
     pub port: u16,
 }
 
-pub fn setup_pipelines<FPL>(
+/// This function is called once by each scheduler running as an independent thread on each active core when the RunTime installs the pipelines.
+/// Currently it iterates through all physical ports which use the respective core and sets up the network function graph (NFG) of the engine for that port and that core.
+/// This happens by adding Runnables to the scheduler. Each Runnable runs to completion. E.g. it takes a packet batch from an ingress queue, processes the packets
+/// following the NFG and puts the packets of the batch into egress queues. After this it returns to the scheduler.
+pub fn setup_pipelines<NFG>(
     core: i32,
     pmd_ports: HashMap<String, Arc<PmdPort>>,
     sched: &mut StandaloneScheduler,
-    run_configuration: RunConfiguration<Configuration, TEngineStore>,
-    servers: Vec<L234Data>,
-    f_set_payload: Box<FPL>,
+    run_configuration: RunConfiguration<Configuration, Store64<Extension>>,
+    nfg: Box<NFG>,
 ) where
-    FPL: FnPayload,
+    NFG: FnNetworkFunctionGraph,
 {
     for pmd_port in physical_ports_for_core(core, &pmd_ports) {
         debug!("setup_pipelines for {} on core {}:", pmd_port.name(), core);
@@ -143,17 +174,23 @@ pub fn setup_pipelines<FPL>(
                 .move_ready(), // this task must be ready from the beginning to enable managing the KNI i/f
             );
         }
-
-        if pci.is_some() && kni.is_some() {
-            setup_generator(
-                core,
-                pci.unwrap(),
-                kni.unwrap(),
-                sched,
-                run_configuration.clone(),
-                servers.clone(),
-                f_set_payload.clone(),
-            );
-        }
+        nfg(core, pci, kni, sched, run_configuration.clone());
     }
+}
+
+pub fn get_server_addresses(configuration: &Configuration) -> Vec<L234Data> {
+    configuration
+        .targets
+        .iter()
+        .enumerate()
+        .map(|(i, srv_cfg)| L234Data {
+            mac: srv_cfg
+                .mac
+                .unwrap_or_else(|| get_mac_from_ifname(srv_cfg.linux_if.as_ref().unwrap()).unwrap()),
+            ip: u32::from(srv_cfg.ip),
+            port: srv_cfg.port,
+            server_id: srv_cfg.id.clone(),
+            index: i,
+        })
+        .collect()
 }
