@@ -19,8 +19,7 @@ use e2d2::allocators::CacheAligned;
 use e2d2::operators::{ReceiveBatch, Batch, TransformBatch};
 
 use netfcts::comm::{MessageFrom};
-use netfcts::RunTime;
-use netfcts::recstore::TEngineStore;
+use netfcts::{RunTime, Store64};
 
 use traffic_lib::Configuration;
 use std::collections::{HashSet};
@@ -29,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use std::process;
+use netfcts::recstore::Extension;
 
 use uuid::Uuid;
 
@@ -72,7 +72,7 @@ pub fn macswap() {
     // cannot directly read toml file from command line, as cargo test owns it. Thus we take a detour and read it from a file.
     const INDIRECTION_FILE: &str = "./tests/toml_file.txt";
 
-    let mut run_time: RunTime<Configuration, TEngineStore> = match RunTime::init_indirectly(INDIRECTION_FILE) {
+    let mut run_time: RunTime<Configuration, Store64<Extension>> = match RunTime::init_indirectly(INDIRECTION_FILE) {
         Ok(run_time) => run_time,
         Err(err) => panic!("failed to initialize RunTime {}", err),
     };

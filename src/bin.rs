@@ -16,8 +16,7 @@ extern crate clap;
 #[macro_use]
 extern crate log;
 
-use std::arch::x86_64::_rdtsc;
-use e2d2::interface::{PmdPort, Pdu, HeaderStack, PciQueueType, KniQueueType};
+use e2d2::interface::{PmdPort, Pdu, HeaderStack};
 use e2d2::scheduler::StandaloneScheduler;
 
 use netfcts::comm::{MessageFrom, MessageTo};
@@ -26,12 +25,11 @@ use netfcts::io::print_tcp_counters;
 use netfcts::conrecord::{ConRecord, HasTcpState, HasConData};
 #[cfg(feature = "profiling")]
 use netfcts::io::print_rx_tx_counters;
-use netfcts::tcp_common::{CData, L234Data, tcp_payload_size};
-use netfcts::{strip_payload, RunConfiguration};
 use netfcts::recstore::{Extension, Store64};
 use netfcts::RunTime;
 
-use traffic_lib::{setup_pipelines, Connection, Configuration, EngineMode, FnNetworkFunctionGraph, ProxyConnection};
+use traffic_lib::{setup_pipelines, Connection, Configuration, EngineMode, FnNetworkFunctionGraph, get_tcp_generator_nfg,
+              get_delayed_tcp_proxy_nfg};
 use traffic_lib::ReleaseCause;
 use traffic_lib::TcpState;
 
@@ -47,15 +45,11 @@ use std::net::{SocketAddrV4, Ipv4Addr};
 use std::mem;
 use std::cmp;
 
-use bincode::serialize_into;
 use separator::Separatable;
 use rustyline::Editor;
 use rustyline::error::ReadlineError;
 use clap::{Command, Arg, ArgAction};
 use e2d2::native::zcsi::rte_ethdev_api::{rte_eth_stats_get, rte_eth_stats};
-use traffic_lib::nfproxy::setup_delayed_proxy;
-use traffic_lib::nftraffic::setup_generator;
-
 
 fn print_performance_from_stamps(cpu_clock: u64, nr_connections: usize, start_stop_stamps: HashMap<PipelineId, (u64, u64)>) {
     println!("\nperformance data derived from time stamps sent by pipelines:");
@@ -231,103 +225,6 @@ fn evaluate_records(
     f.flush().expect("cannot flush BufWriter");
 }
 
-trait NFGfn = Fn(
-        i32,
-        Option<PciQueueType>,
-        Option<KniQueueType>,
-        &mut StandaloneScheduler,
-        RunConfiguration<Configuration, Store64<Extension>>,
-    ) + Clone;
-
-/// return the closure which creates the network function graph for the tcp generator (server and client)
-fn get_tcp_generator_nfg(fin_by_client: usize) -> impl NFGfn {
-    // set_payload_closure sets up the tcp payload packet in the tcp client
-    let set_payload_closure = Box::new(
-        move |p: &mut Pdu, c: &mut Connection, cdata: Option<CData>, b_fin: &mut bool| {
-            let pp = c.sent_payload_pkts();
-            if pp < 1 {
-                // this is the first payload packet sent by client, headers are already prepared with client and server addresses and ports
-                let sz;
-                let mut buf = [0u8; 16];
-                {
-                    let ip = p.headers_mut().ip_mut(1);
-                    serialize_into(&mut buf[..], &cdata.unwrap()).expect("cannot serialize");
-                    //let buf = serialize(&cdata).unwrap();
-                    sz = buf.len();
-                    let ip_sz = ip.length();
-                    ip.set_length(ip_sz + sz as u16);
-                }
-                p.add_to_payload_tail(sz).expect("insufficient tail room");
-                p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
-                return tcp_payload_size(p);
-            } else if pp == fin_by_client && c.state() < TcpState::CloseWait {
-                strip_payload(p);
-                *b_fin = true;
-                return 0;
-            } else if pp < fin_by_client && c.state() < TcpState::CloseWait {
-                strip_payload(p);
-                let stamp = unsafe { _rdtsc() };
-                let buf = stamp.to_be_bytes();
-                let ip_sz = p.headers().ip(1).length();
-                p.add_to_payload_tail(buf.len()).expect("insufficient tail room for u64");
-                p.headers_mut().ip_mut(1).set_length(ip_sz + buf.len() as u16);
-                p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
-                return tcp_payload_size(p);
-            }
-            return 0;
-        },
-    );
-
-    move |core: i32,
-          pci: Option<PciQueueType>,
-          kni: Option<KniQueueType>,
-          s: &mut StandaloneScheduler,
-          config: RunConfiguration<Configuration, Store64<Extension>>| {
-        if pci.is_some() && kni.is_some() {
-            setup_generator(core, pci.unwrap(), kni.unwrap(), s, config, set_payload_closure.clone());
-        }
-    }
-}
-
-/// return the closure which creates the network function graph for the delayed tcp proxy
-fn get_delayed_tcp_proxy_nfg() -> impl NFGfn {
-    // this closure may modify the payload of client to server packets in a TCP connection
-    let process_payload_c_s_closure = |_c: &mut ProxyConnection, _payload: &mut [u8], _tailroom: usize| {};
-
-    // this closure selects the target server to use for a new incoming TCP connection received by the tcp proxy
-    let select_target_by_payload_closure = move |c: &mut ProxyConnection, servers: &Vec<L234Data>| {
-        //let cdata: CData = serde_json::from_slice(&c.payload).expect("cannot deserialize CData");
-        //no_calls +=1;
-        let cdata: CData = bincode::deserialize::<CData>(c.payload_packet.as_ref().unwrap().get_payload(2))
-            .expect("cannot deserialize CData");
-        //info!("cdata = {:?}", cdata);
-        for (i, l234) in servers.iter().enumerate() {
-            if l234.port == cdata.reply_socket.port() && l234.ip == u32::from(*cdata.reply_socket.ip()) {
-                c.set_server_index(i as u8);
-                break;
-            }
-        }
-    };
-
-    move |core: i32,
-          pci: Option<PciQueueType>,
-          kni: Option<KniQueueType>,
-          s: &mut StandaloneScheduler,
-          config: RunConfiguration<Configuration, Store64<Extension>>| {
-        if pci.is_some() && kni.is_some() {
-            setup_delayed_proxy(
-                core,
-                pci.unwrap(),
-                kni.unwrap(),
-                s,
-                config,
-                select_target_by_payload_closure.clone(),
-                process_payload_c_s_closure.clone(),
-            );
-        }
-    }
-}
-
 pub fn main() {
     env_logger::init();
     info!("Reading configuration ..");
@@ -339,6 +236,7 @@ pub fn main() {
     let mode = runtime
         .run_configuration
         .engine_configuration
+        .engine
         .mode
         .as_ref()
         .unwrap_or(&EngineMode::TrafficGenerator)
@@ -350,11 +248,6 @@ pub fn main() {
     runtime.setup_flowdirector().expect("failed to setup flowdirector");
 
     let run_configuration = runtime.run_configuration.clone();
-
-    // number of payloads sent, after which the connection is closed
-    let fin_by_client = run_configuration.engine_configuration.engine.fin_by_client.unwrap_or(1000);
-    let _fin_by_server = run_configuration.engine_configuration.engine.fin_by_server.unwrap_or(1);
-
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -379,7 +272,7 @@ pub fn main() {
                             pmd_ports,
                             s,
                             run_configuration_cloned.clone(),
-                            Box::new(get_tcp_generator_nfg(fin_by_client)).clone(),
+                            Box::new(get_tcp_generator_nfg()).clone(),
                         );
                     },
                 ))
@@ -394,7 +287,7 @@ pub fn main() {
                             pmd_ports,
                             s,
                             run_configuration_cloned.clone(),
-                            Box::new(get_delayed_tcp_proxy_nfg()).clone(),
+                            Box::new(get_delayed_tcp_proxy_nfg(None)).clone(),
                         );
                     },
                 ))

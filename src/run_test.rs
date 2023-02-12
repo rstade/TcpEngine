@@ -15,28 +15,23 @@ use std::io::{Read, Write, BufWriter};
 use std::fs::File;
 use std::process;
 
-use bincode::{serialize_into};
-
-use e2d2::interface::{PmdPort, Pdu, FlowSteeringMode, PciQueueType, KniQueueType};
+use e2d2::interface::{PmdPort, FlowSteeringMode};
 use e2d2::scheduler::StandaloneScheduler;
 
 use separator::Separatable;
-use netfcts::{RunConfiguration, RunTime};
+use netfcts::{RunTime};
 use netfcts::comm::PipelineId;
 use netfcts::conrecord::HasTcpState;
 use netfcts::io::print_tcp_counters;
 #[cfg(feature = "profiling")]
 use netfcts::io::print_rx_tx_counters;
-use netfcts::strip_payload;
-use netfcts::tcp_common::tcp_payload_size;
 
-use setup_pipelines;
-use {CData, Connection, Configuration};
+use {get_tcp_generator_nfg, setup_pipelines};
+use {CData, Configuration};
 use {MessageFrom, MessageTo};
 use ReleaseCause;
 use {TcpState, TcpStatistics};
 use netfcts::recstore::{Extension, Store64};
-use nftraffic::setup_generator;
 
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,27 +39,6 @@ pub enum TestType {
     Client,
     Server,
 }
-/*
-trait TcpGeneratorNFG:
-    Fn(
-        i32,
-        Option<PciQueueType>,
-        Option<KniQueueType>,
-        &mut StandaloneScheduler,
-        RunConfiguration<Configuration, TEngineStore>,
-    ) -> ()
-    + Sized
-    + Send
-    + Sync
-    + Clone
-    + 'static
-{
-}
-
-fn get_tcp_generator_nfg(fin_by_client: usize) -> Box<dyn  TcpGeneratorNFG<Output=()>> {
-
-};
-*/
 
 // we use this function for the integration tests
 pub fn run_test(test_type: TestType) {
@@ -108,54 +82,6 @@ pub fn run_test(test_type: TestType) {
     runtime.start_schedulers().expect("cannot start schedulers");
     let run_configuration_cloned = run_configuration.clone();
 
-    let f_set_payload = Box::new(
-        move |p: &mut Pdu, c: &mut Connection, cdata: Option<CData>, b_fin: &mut bool| {
-            let pp = c.sent_payload_pkts();
-            if pp < 1 {
-                // this is the first payload packet sent by client, headers are already prepared with client and server addresses and ports
-                let sz;
-                let mut buf = [0u8; 16];
-                {
-                    let ip = p.headers_mut().ip_mut(1);
-                    serialize_into(&mut buf[..], &cdata.unwrap()).expect("cannot serialize");
-                    //let buf = serialize(&cdata).unwrap();
-                    sz = buf.len();
-                    let ip_sz = ip.length();
-                    ip.set_length(ip_sz + sz as u16);
-                }
-                p.add_to_payload_tail(sz).expect("insufficient tail room");
-                p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
-                return tcp_payload_size(p);
-            } else if pp == fin_by_client && c.state() < TcpState::CloseWait {
-                strip_payload(p);
-                *b_fin = true;
-                return 0;
-            } else if pp < fin_by_client && c.state() < TcpState::CloseWait {
-                strip_payload(p);
-                let stamp = unsafe { _rdtsc() };
-                let buf = stamp.to_be_bytes();
-                let ip_sz = p.headers().ip(1).length();
-                p.add_to_payload_tail(buf.len()).expect("insufficient tail room for u64");
-                p.headers_mut().ip_mut(1).set_length(ip_sz + buf.len() as u16);
-                p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
-                return tcp_payload_size(p);
-            }
-            return 0;
-        },
-    );
-
-    let tcp_generator_nfg = Box::new(
-        move |core: i32,
-              pci: Option<PciQueueType>,
-              kni: Option<KniQueueType>,
-              s: &mut StandaloneScheduler,
-              config: RunConfiguration<Configuration, Store64<Extension>>| {
-            if pci.is_some() && kni.is_some() {
-                setup_generator(core, pci.unwrap(), kni.unwrap(), s, config, f_set_payload.clone());
-            }
-        },
-    );
-
     runtime
         .install_pipeline_on_cores(Box::new(
             move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
@@ -164,7 +90,7 @@ pub fn run_test(test_type: TestType) {
                     pmd_ports,
                     s,
                     run_configuration_cloned.clone(),
-                    tcp_generator_nfg.clone(),
+                    Box::new(get_tcp_generator_nfg()).clone(),
                 );
             },
         ))
@@ -235,8 +161,6 @@ pub fn run_test(test_type: TestType) {
                             .read(&mut buffer[..])
                             .expect(&format!("cannot read from stream {}", stream.peer_addr().unwrap()));
                         let cdata: CData = bincode::deserialize(&buffer[0..nr_bytes]).expect("cannot deserialize cdata");
-                        //serde_json::from_slice(&buffer[0..nr_bytes]).expect("cannot deserialize CData");
-                        //let socket=Box::new(bincode::deserialize::<SocketAddrV4>(&buffer).expect("cannot deserialize SocketAddrV4"));
                         debug!("{} received {:?} from: {}", id, cdata, stream.peer_addr().unwrap());
                         stream.write(&"Thank you".as_bytes()).expect("cannot write to stream");
                         for i in 1..fin_by_client {

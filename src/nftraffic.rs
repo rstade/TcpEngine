@@ -27,7 +27,6 @@ use netfcts::{prepare_checksum_and_ttl, RunConfiguration, Store64};
 use netfcts::set_header;
 use netfcts::remove_tcp_options;
 use netfcts::{make_reply_packet, strip_payload};
-//use netfcts::recstore::TEngineStore;
 
 use {FnPayload, get_server_addresses};
 use std::convert::TryFrom;
@@ -47,7 +46,7 @@ pub fn setup_generator<FPL>(
     kni: CacheAligned<PortQueue>,
     sched: &mut StandaloneScheduler,
     run_configuration: RunConfiguration<Configuration, Store64<Extension>>,
-    set_payload_closure: Box<FPL>,
+    set_payload: FPL,
 ) where
     FPL: FnPayload,
 {
@@ -83,7 +82,7 @@ pub fn setup_generator<FPL>(
 
     let mut timeouts = Timeouts::default_or_some(&engine_config.timeouts);
     let max_open = engine_config.max_open.unwrap_or(cm_c.available_ports_count());
-    let _fin_by_client = engine_config.fin_by_client.unwrap_or(1000);
+    let fin_by_client = engine_config.fin_by_client.unwrap_or(1000);
     let fin_by_server = engine_config.fin_by_server.unwrap_or(1);
 
     let mut wheel_c = TimerWheel::new(
@@ -520,7 +519,7 @@ pub fn setup_generator<FPL>(
 
         let c_recv_payload = |p: &mut Pdu, c: &mut Connection| {
             let mut b_fin = false;
-            set_payload_closure(p, c, None, &mut b_fin);
+            set_payload(p, c, None, &mut b_fin, &fin_by_client);
             if !b_fin {
                 c.inc_sent_payload_pkts();
                 p.headers_mut().tcp_mut(2).set_seq_num(c.seqn_nxt);
@@ -632,7 +631,7 @@ pub fn setup_generator<FPL>(
                     let mut b_fin = false;
                     cdata.client_port = c.port();
                     cdata.uuid = c.uid();
-                    set_payload_closure(pdu, c, Some(cdata), &mut b_fin);
+                    set_payload(pdu, c, Some(cdata), &mut b_fin, &fin_by_client);
                     /*
                     let pp = c.sent_payload_pkts();
                     if pp < 1 {
