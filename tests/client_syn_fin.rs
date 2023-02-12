@@ -7,10 +7,9 @@ extern crate env_logger;
 extern crate ipnet;
 extern crate netfcts;
 extern crate separator;
-extern crate traffic_lib;
+extern crate tcp_lib;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::thread;
 use std::io::Read;
@@ -28,35 +27,13 @@ use e2d2::scheduler::StandaloneScheduler;
 use netfcts::tcp_common::{ReleaseCause, L234Data, TcpState};
 use netfcts::io::{print_tcp_counters, print_rx_tx_counters};
 use netfcts::conrecord::{HasTcpState};
-use netfcts::{RunTime, Store64};
 use netfcts::comm::{MessageFrom, MessageTo};
-use netfcts::recstore::Extension;
 
-use traffic_lib::{Configuration, EngineMode, get_delayed_tcp_proxy_nfg, ProxyConnection, setup_pipelines};
+use tcp_lib::{EngineMode, get_delayed_tcp_proxy_nfg, initialize_engine, ProxyConnection, setup_pipelines};
 
 #[test]
 fn delayed_binding_proxy() {
-    env_logger::init();
-
-    // cannot directly read toml file from command line, as cargo test owns it. Thus we take a detour and read it from a file.
-    const INDIRECTION_FILE: &str = "./tests/toml_file.txt";
-
-    let mut runtime: RunTime<Configuration, Store64<Extension>> = match RunTime::init_indirectly(INDIRECTION_FILE) {
-        Ok(run_time) => run_time,
-        Err(err) => panic!("failed to initialize RunTime {}", err),
-    };
-
-    let mode = runtime
-        .run_configuration
-        .engine_configuration
-        .engine
-        .mode
-        .as_ref()
-        .unwrap_or(&EngineMode::DelayedProxy)
-        .clone();
-
-    // setup flowdirector for physical ports:
-    runtime.setup_flowdirector().expect("failed to setup flowdirector");
+    let (mut runtime, mode, _running) = initialize_engine(true);
 
     let run_configuration = runtime.run_configuration.clone();
     let configuration = &run_configuration.engine_configuration;
@@ -68,14 +45,6 @@ fn delayed_binding_proxy() {
         );
         process::exit(1);
     };
-
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        info!("received SIGINT or SIGTERM");
-        r.store(false, Ordering::SeqCst);
-    })
-    .expect("error setting Ctrl-C handler");
 
     info!("Testing early Fin of client ..");
 

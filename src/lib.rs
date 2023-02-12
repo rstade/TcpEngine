@@ -42,12 +42,13 @@ use e2d2::interface::{PmdPort, Pdu, PciQueueType, KniQueueType};
 
 use netfcts::tasks::*;
 use netfcts::comm::{MessageFrom, MessageTo, PipelineId};
-use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, Store64, strip_payload};
+use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, RunTime, Store64, strip_payload};
 use netfcts::utils::Timeouts;
 
 use std::net::Ipv4Addr;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use bincode::serialize_into;
 use netfcts::recstore::Extension;
 use netfcts::system::get_mac_from_ifname;
@@ -320,4 +321,45 @@ pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl 
             );
         }
     }
+}
+
+pub fn initialize_engine(indirectly: bool) -> (RunTime<Configuration, Store64<Extension>>, EngineMode, Arc<AtomicBool>) {
+    env_logger::init();
+    info!("Reading configuration ..");
+
+    // cannot directly read toml file from command line, as cargo test owns it. Thus we take a detour and read it from a file.
+    const INDIRECTION_FILE: &str = "./tests/toml_file.txt";
+
+    let mut runtime: RunTime<Configuration, Store64<Extension>> = if indirectly {
+        match RunTime::init_indirectly(INDIRECTION_FILE) {
+            Ok(run_time) => run_time,
+            Err(err) => panic!("failed to initialize RunTime {}", err),
+        }
+    } else {
+        match RunTime::init() {
+            Ok(run_time) => run_time,
+            Err(err) => panic!("failed to initialize RunTime {}", err),
+        }
+    };
+
+    let mode = runtime
+        .run_configuration
+        .engine_configuration
+        .engine
+        .mode
+        .as_ref()
+        .unwrap_or(&EngineMode::TrafficGenerator)
+        .clone();
+
+    // setup flowdirector for physical ports:
+    runtime.setup_flowdirector().expect("failed to setup flowdirector");
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        info!("received SIGINT or SIGTERM");
+        r.store(false, Ordering::SeqCst);
+    })
+    .expect("error setting Ctrl-C handler");
+    (runtime, mode, running)
 }

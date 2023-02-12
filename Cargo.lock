@@ -1127,6 +1127,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tcpcengine"
+version = "0.3.1"
+dependencies = [
+ "bincode",
+ "clap",
+ "ctrlc",
+ "e2d2",
+ "env_logger",
+ "eui48",
+ "fnv",
+ "ipnet",
+ "log 0.4.17",
+ "netfcts",
+ "rustyline",
+ "separator",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "time",
+ "toml 0.4.10",
+ "uuid",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1413,30 +1437,6 @@ dependencies = [
  "serde",
  "serde_spanned",
  "toml_datetime",
-]
-
-[[package]]
-name = "trafficengine"
-version = "0.3.1"
-dependencies = [
- "bincode",
- "clap",
- "ctrlc",
- "e2d2",
- "env_logger",
- "eui48",
- "fnv",
- "ipnet",
- "log 0.4.17",
- "netfcts",
- "rustyline",
- "separator",
- "serde",
- "serde_derive",
- "serde_json",
- "time",
- "toml 0.4.10",
- "uuid",
 ]
 
 [[package]]

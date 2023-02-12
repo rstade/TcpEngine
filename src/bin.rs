@@ -9,7 +9,7 @@ extern crate separator;
 extern crate netfcts;
 extern crate bincode;
 extern crate rustyline;
-extern crate traffic_lib;
+extern crate tcp_lib;
 extern crate clap;
 
 // Logging
@@ -26,16 +26,15 @@ use netfcts::conrecord::{ConRecord, HasTcpState, HasConData};
 #[cfg(feature = "profiling")]
 use netfcts::io::print_rx_tx_counters;
 use netfcts::recstore::{Extension, Store64};
-use netfcts::RunTime;
 
-use traffic_lib::{setup_pipelines, Connection, Configuration, EngineMode, FnNetworkFunctionGraph, get_tcp_generator_nfg,
-              get_delayed_tcp_proxy_nfg};
-use traffic_lib::ReleaseCause;
-use traffic_lib::TcpState;
+use tcp_lib::{setup_pipelines, Connection, EngineMode, FnNetworkFunctionGraph, get_tcp_generator_nfg,
+          get_delayed_tcp_proxy_nfg, initialize_engine};
+use tcp_lib::ReleaseCause;
+use tcp_lib::TcpState;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Duration;
@@ -225,42 +224,16 @@ fn evaluate_records(
     f.flush().expect("cannot flush BufWriter");
 }
 
+
 pub fn main() {
-    env_logger::init();
-    info!("Reading configuration ..");
-    let mut runtime: RunTime<Configuration, Store64<Extension>> = match RunTime::init() {
-        Ok(run_time) => run_time,
-        Err(err) => panic!("failed to initialize RunTime {}", err),
-    };
-
-    let mode = runtime
-        .run_configuration
-        .engine_configuration
-        .engine
-        .mode
-        .as_ref()
-        .unwrap_or(&EngineMode::TrafficGenerator)
-        .clone();
-
-    info!("Starting {:?} ...\n", mode);
-
-    // setup flowdirector for physical ports:
-    runtime.setup_flowdirector().expect("failed to setup flowdirector");
+    let (mut runtime, mode, running) = initialize_engine(false);
 
     let run_configuration = runtime.run_configuration.clone();
-
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        info!("received SIGINT or SIGTERM");
-        r.store(false, Ordering::SeqCst);
-    })
-    .expect("error setting Ctrl-C handler");
-
+    let run_configuration_cloned = run_configuration.clone();
     let nr_connections = run_configuration.engine_configuration.test_size.unwrap_or(128);
 
     runtime.start_schedulers().expect("cannot start schedulers");
-    let run_configuration_cloned = run_configuration.clone();
+
 
     match mode {
         EngineMode::TrafficGenerator => {
@@ -297,9 +270,6 @@ pub fn main() {
     };
 
     let cores = runtime.context().unwrap().active_cores.clone();
-    for core in &cores {
-        println!("core = {}", core);
-    }
 
     // start the run_time
     runtime.start();

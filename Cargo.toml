@@ -1,14 +1,14 @@
 [package]
-name = "trafficengine"
+name = "tcpcengine"
 version = "0.3.1"
 authors = ["Rainer Stademann <rainer.stademann@silverengine.de>"]
 
 [lib]
-name = "traffic_lib"
+name = "tcp_lib"
 path = "src/lib.rs"
 
 [[bin]]
-name = "trafficengine"
+name = "tcpengine"
 path = "src/bin.rs"
 
 

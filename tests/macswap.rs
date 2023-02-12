@@ -11,7 +11,7 @@ extern crate uuid;
 // Logging
 #[macro_use]
 extern crate log;
-extern crate traffic_lib;
+extern crate tcp_lib;
 
 use e2d2::interface::{PortQueue};
 use e2d2::scheduler::{StandaloneScheduler, Scheduler, Runnable};
@@ -21,7 +21,7 @@ use e2d2::operators::{ReceiveBatch, Batch, TransformBatch};
 use netfcts::comm::{MessageFrom};
 use netfcts::{RunTime, Store64};
 
-use traffic_lib::Configuration;
+use tcp_lib::Configuration;
 use std::collections::{HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

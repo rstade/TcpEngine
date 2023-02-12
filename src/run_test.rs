@@ -5,7 +5,6 @@ extern crate bincode;
 
 use std::arch::x86_64::_rdtsc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::thread;
 use std::net::{SocketAddr, SocketAddrV4, TcpListener, TcpStream, Shutdown, Ipv4Addr};
@@ -19,7 +18,6 @@ use e2d2::interface::{PmdPort, FlowSteeringMode};
 use e2d2::scheduler::StandaloneScheduler;
 
 use separator::Separatable;
-use netfcts::{RunTime};
 use netfcts::comm::PipelineId;
 use netfcts::conrecord::HasTcpState;
 use netfcts::io::print_tcp_counters;
@@ -27,11 +25,10 @@ use netfcts::io::print_tcp_counters;
 use netfcts::io::print_rx_tx_counters;
 
 use {get_tcp_generator_nfg, setup_pipelines};
-use {CData, Configuration};
+use {CData};
 use {MessageFrom, MessageTo};
-use ReleaseCause;
+use {initialize_engine, ReleaseCause};
 use {TcpState, TcpStatistics};
-use netfcts::recstore::{Extension, Store64};
 
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,22 +39,12 @@ pub enum TestType {
 
 // we use this function for the integration tests
 pub fn run_test(test_type: TestType) {
-    env_logger::init();
+    let (mut runtime, _mode, _running) = initialize_engine(true);
     debug!("*** run_test logging is in debug mode ***");
-
-    // cannot directly read toml file from command line, as cargo test owns it. Thus we take a detour and read it from a file.
-    const INDIRECTION_FILE: &str = "./tests/toml_file.txt";
-
-    let mut runtime: RunTime<Configuration, Store64<Extension>> = match RunTime::init_indirectly(INDIRECTION_FILE) {
-        Ok(run_time) => run_time,
-        Err(err) => panic!("failed to initialize RunTime {}", err),
-    };
-
-    // setup flowdirector for physical ports:
-    runtime.setup_flowdirector().expect("failed to setup flowdirector");
 
     let run_configuration = runtime.run_configuration.clone();
     let configuration = &run_configuration.engine_configuration;
+    let run_configuration_cloned = run_configuration.clone();
 
     if configuration.test_size.is_none() {
         error!(
@@ -69,18 +56,9 @@ pub fn run_test(test_type: TestType) {
 
     // number of payloads sent, after which the connection is closed
     let fin_by_client = configuration.engine.fin_by_client.unwrap_or(1000);
-    let _fin_by_server = configuration.engine.fin_by_server.unwrap_or(1);
-
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        info!("received SIGINT or SIGTERM");
-        r.store(false, Ordering::SeqCst);
-    })
-    .expect("error setting Ctrl-C handler");
 
     runtime.start_schedulers().expect("cannot start schedulers");
-    let run_configuration_cloned = run_configuration.clone();
+
 
     runtime
         .install_pipeline_on_cores(Box::new(
