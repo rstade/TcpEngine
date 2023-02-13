@@ -26,7 +26,7 @@ use netfcts::io::print_rx_tx_counters;
 
 use {get_tcp_generator_nfg, setup_pipelines};
 use {CData};
-use {MessageFrom, MessageTo};
+use netfcts::comm::{MessageFrom, MessageTo};
 use {initialize_engine, ReleaseCause};
 use {TcpState, TcpStatistics};
 

@@ -13,24 +13,29 @@ use uuid::Uuid;
 use bincode::{deserialize};
 use separator::Separatable;
 
-use netfcts::tcp_common::{TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size};
+
 use tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
 use {Configuration};
+
+use netfcts::tcp_common::{TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size};
+
 #[cfg(feature = "profiling")]
 use netfcts::utils::TimeAdder;
-use {PipelineId, MessageFrom, MessageTo, TaskType};
+use netfcts::comm::{MessageFrom, MessageTo};
+use netfcts::tasks::TaskType;
 use netfcts::utils::Timeouts;
 use netfcts::tasks::{PRIVATE_ETYPE_PACKET, PRIVATE_ETYPE_TIMER, ETYPE_IPV4};
 use netfcts::tasks::{private_etype, PacketInjector, TickGenerator, install_task};
 use netfcts::timer_wheel::TimerWheel;
-use netfcts::{prepare_checksum_and_ttl, RunConfiguration, Store64};
+use netfcts::{prepare_checksum_and_ttl, RunConfiguration};
 use netfcts::set_header;
 use netfcts::remove_tcp_options;
 use netfcts::{make_reply_packet, strip_payload};
 
 use {FnPayload, get_server_addresses};
 use std::convert::TryFrom;
-use netfcts::recstore::Extension;
+use netfcts::comm::PipelineId;
+use netfcts::recstore::{Extension, Store64};
 
 
 const MIN_FRAME_SIZE: usize = 60;

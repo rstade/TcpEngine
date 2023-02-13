@@ -5,7 +5,6 @@ extern crate time;
 extern crate log;
 extern crate env_logger;
 extern crate ipnet;
-extern crate netfcts;
 extern crate separator;
 extern crate tcp_lib;
 
@@ -25,13 +24,11 @@ use e2d2::native::zcsi::*;
 use e2d2::interface::{PmdPort};
 use e2d2::scheduler::StandaloneScheduler;
 
-use netfcts::tcp_common::{ReleaseCause, TcpStatistics, L234Data, TcpState};
-
-use netfcts::io::{print_tcp_counters, print_rx_tx_counters};
-use netfcts::conrecord::{HasTcpState, ConRecord};
-
-use netfcts::comm::{MessageFrom, MessageTo};
-use netfcts::recstore::Extension;
+use tcp_lib::netfcts::tcp_common::{ReleaseCause, TcpStatistics, L234Data, TcpState};
+use tcp_lib::netfcts::io::{print_tcp_counters, print_rx_tx_counters};
+use tcp_lib::netfcts::conrecord::{HasTcpState, ConRecord};
+use tcp_lib::netfcts::comm::{MessageFrom, MessageTo};
+use tcp_lib::netfcts::recstore::Extension;
 use tcp_lib::{EngineMode, get_delayed_tcp_proxy_nfg, initialize_engine, ProxyConnection, setup_pipelines};
 
 

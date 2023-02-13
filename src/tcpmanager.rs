@@ -11,14 +11,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use e2d2::interface::{PortQueue, L4Flow};
 use netfcts::timer_wheel::TimerWheel;
-use PipelineId;
 
 use netfcts::tcp_common::*;
 use netfcts::conrecord::HasTcpState;
 use netfcts::utils::shuffle_ports;
-use netfcts::{Store64, ConRecordOperations};
-use netfcts::recstore::{Extension, SimpleStore};
-
+use netfcts::recstore::{ConRecordOperations, Extension, SimpleStore, Store64};
+use netfcts::comm::PipelineId;
 
 //#[repr(align(64))]
 #[derive(Debug)]

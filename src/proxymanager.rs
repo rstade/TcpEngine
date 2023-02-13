@@ -10,8 +10,7 @@ use e2d2::interface::{PortQueue, L4Flow, Pdu};
 //use uuid::Uuid;
 use netfcts::timer_wheel::TimerWheel;
 use netfcts::tcp_common::*;
-use netfcts::Store64;
-use netfcts::{SimpleStore};
+use netfcts::recstore::{SimpleStore, Store64};
 use netfcts::conrecord::HasTcpState;
 use netfcts::utils::shuffle_ports;
 #[cfg(feature = "profiling")]

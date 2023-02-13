@@ -23,12 +23,15 @@ use netfcts::set_header;
 use netfcts::remove_tcp_options;
 use netfcts::make_reply_packet;
 use netfcts::recstore::{Extension, ProxyRecStore, Store64};
+use netfcts::comm::PipelineId;
 
 #[cfg(feature = "profiling")]
 use netfcts::utils::TimeAdder;
 
 use ::{Configuration, FnProxySelectServer};
-use {PipelineId, MessageFrom, MessageTo, TaskType};
+use netfcts::comm::{ MessageFrom, MessageTo };
+use netfcts::tasks::TaskType;
+
 use ::{Timeouts, FnProxyPayload};
 use get_server_addresses;
 

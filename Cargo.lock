@@ -656,23 +656,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "netfcts"
-version = "0.2.3"
-dependencies = [
- "e2d2",
- "env_logger",
- "eui48",
- "ipnet",
- "log 0.4.17",
- "rand 0.8.5",
- "separator",
- "serde",
- "serde_derive",
- "toml 0.4.10",
- "uuid",
-]
-
-[[package]]
 name = "nibble_vec"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1139,7 +1122,7 @@ dependencies = [
  "fnv",
  "ipnet",
  "log 0.4.17",
- "netfcts",
+ "rand 0.8.5",
  "rustyline",
  "separator",
  "serde",

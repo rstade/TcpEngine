@@ -17,18 +17,19 @@ extern crate uuid;
 extern crate serde;
 extern crate bincode;
 extern crate serde_json;
-extern crate netfcts;
 extern crate ipnet;
 extern crate core;
+extern crate rand;
 
 pub mod nftraffic;
 pub mod nfproxy;
 pub mod run_test;
 mod tcpmanager;
 pub mod proxymanager;
+pub mod netfcts;
 
 use std::arch::x86_64::_rdtsc;
-pub use netfcts::tcp_common::{CData, L234Data, ReleaseCause, UserData, TcpRole, TcpState, TcpCounter, TcpStatistics};
+use netfcts::tcp_common::{CData, L234Data, ReleaseCause, TcpState, TcpStatistics};
 pub use netfcts::conrecord::ConRecord;
 
 pub use tcpmanager::{Connection};
@@ -41,17 +42,17 @@ use e2d2::scheduler::*;
 use e2d2::interface::{PmdPort, Pdu, PciQueueType, KniQueueType};
 
 use netfcts::tasks::*;
-use netfcts::comm::{MessageFrom, MessageTo, PipelineId};
-use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, RunTime, Store64, strip_payload};
+use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, RunTime, strip_payload};
 use netfcts::utils::Timeouts;
 
 use std::net::Ipv4Addr;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
 use bincode::serialize_into;
-use netfcts::recstore::Extension;
-use netfcts::system::get_mac_from_ifname;
+use netfcts::recstore::{Extension, Store64};
+use netfcts::system::{get_mac_from_ifname};
 use netfcts::tcp_common::tcp_payload_size;
 use nfproxy::setup_delayed_proxy;
 use nftraffic::setup_generator;

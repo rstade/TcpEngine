@@ -5,7 +5,6 @@ extern crate env_logger;
 extern crate eui48;
 extern crate ipnet;
 extern crate separator;
-extern crate netfcts;
 extern crate uuid;
 
 // Logging
@@ -17,10 +16,6 @@ use e2d2::interface::{PortQueue};
 use e2d2::scheduler::{StandaloneScheduler, Scheduler, Runnable};
 use e2d2::allocators::CacheAligned;
 use e2d2::operators::{ReceiveBatch, Batch, TransformBatch};
-
-use netfcts::comm::{MessageFrom};
-use netfcts::{RunTime, Store64};
-
 use tcp_lib::Configuration;
 use std::collections::{HashSet};
 use std::sync::Arc;
@@ -28,9 +23,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use std::process;
-use netfcts::recstore::Extension;
-
+use tcp_lib::netfcts::recstore::{Extension, Store64};
+use tcp_lib::netfcts::comm::{MessageFrom};
 use uuid::Uuid;
+use tcp_lib::netfcts::RunTime;
 
 pub fn nf_macswap<T: 'static + Batch>(parent: T) -> TransformBatch<T> {
     parent.transform(box move |pkt| {

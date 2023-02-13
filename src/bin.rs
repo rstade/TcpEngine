@@ -6,31 +6,36 @@ extern crate env_logger;
 extern crate eui48;
 extern crate ipnet;
 extern crate separator;
-extern crate netfcts;
 extern crate bincode;
 extern crate rustyline;
 extern crate tcp_lib;
 extern crate clap;
+extern crate rand;
+#[macro_use]
+extern crate serde_derive;
+
+pub mod netfcts;
 
 // Logging
 #[macro_use]
 extern crate log;
+extern crate uuid;
+extern crate serde;
 
 use e2d2::interface::{PmdPort, Pdu, HeaderStack};
 use e2d2::scheduler::StandaloneScheduler;
 
-use netfcts::comm::{MessageFrom, MessageTo};
-use netfcts::comm::PipelineId;
-use netfcts::io::print_tcp_counters;
-use netfcts::conrecord::{ConRecord, HasTcpState, HasConData};
+use tcp_lib::netfcts::comm::{MessageFrom, MessageTo, PipelineId};
+use tcp_lib::netfcts::io::print_tcp_counters;
+use tcp_lib::netfcts::conrecord::{ConRecord, HasTcpState, HasConData};
 #[cfg(feature = "profiling")]
-use netfcts::io::print_rx_tx_counters;
-use netfcts::recstore::{Extension, Store64};
+use tcp_lib::netfcts::io::print_rx_tx_counters;
+use tcp_lib::netfcts::recstore::{Extension, Store64};
 
 use tcp_lib::{setup_pipelines, Connection, EngineMode, FnNetworkFunctionGraph, get_tcp_generator_nfg,
           get_delayed_tcp_proxy_nfg, initialize_engine};
-use tcp_lib::ReleaseCause;
-use tcp_lib::TcpState;
+use tcp_lib::netfcts::tcp_common::ReleaseCause;
+use tcp_lib::netfcts::tcp_common::TcpState;
 
 use std::collections::HashMap;
 use std::sync::Arc;

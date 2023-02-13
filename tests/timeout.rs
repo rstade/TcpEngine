@@ -5,7 +5,6 @@ extern crate time;
 extern crate log;
 extern crate env_logger;
 extern crate ipnet;
-extern crate netfcts;
 extern crate tcp_lib;
 
 use std::sync::Arc;
@@ -20,10 +19,11 @@ use std::process;
 use e2d2::interface::{PmdPort};
 use e2d2::scheduler::{StandaloneScheduler};
 
-use netfcts::tcp_common::{ReleaseCause, L234Data};
-use netfcts::comm::{MessageFrom, MessageTo};
-use netfcts::conrecord::HasTcpState;
 use tcp_lib::{EngineMode, get_delayed_tcp_proxy_nfg, initialize_engine, ProxyConnection, setup_pipelines};
+use tcp_lib::netfcts::comm::{MessageFrom, MessageTo};
+use tcp_lib::netfcts::conrecord::HasTcpState;
+use tcp_lib::netfcts::tcp_common::L234Data;
+use tcp_lib::netfcts::tcp_common::ReleaseCause;
 
 #[test]
 fn delayed_binding_proxy() {
