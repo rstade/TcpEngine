@@ -1,3 +1,5 @@
+#[cfg(feature = "profiling")]
+use std::arch::x86_64::_rdtsc;
 use std::net::Ipv4Addr;
 use std::collections::{VecDeque, BTreeMap};
 use std::sync::atomic::{AtomicUsize, Ordering};

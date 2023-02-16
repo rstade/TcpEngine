@@ -32,8 +32,7 @@ use tcp_lib::netfcts::conrecord::{ConRecord, HasTcpState, HasConData};
 use tcp_lib::netfcts::io::print_rx_tx_counters;
 use tcp_lib::netfcts::recstore::{Extension, Store64};
 
-use tcp_lib::{setup_pipelines, Connection, EngineMode, FnNetworkFunctionGraph, get_tcp_generator_nfg,
-          get_delayed_tcp_proxy_nfg, initialize_engine};
+use tcp_lib::{setup_pipelines, Connection, EngineMode, FnNetworkFunctionGraph, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg};
 use tcp_lib::netfcts::tcp_common::ReleaseCause;
 use tcp_lib::netfcts::tcp_common::TcpState;
 
@@ -271,7 +270,21 @@ pub fn main() {
                 ))
                 .expect("cannot install pipelines for DelayedProxy");
         }
-        EngineMode::SimpleProxy => error!("simple tcp proxy still not implemented"),
+        EngineMode::SimpleProxy => {
+            runtime
+                .install_pipeline_on_cores(Box::new(
+                    move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
+                        setup_pipelines(
+                            core,
+                            pmd_ports,
+                            s,
+                            run_configuration_cloned.clone(),
+                            Box::new(get_simple_tcp_proxy_nfg(None)).clone(),
+                        );
+                    },
+                ))
+                .expect("cannot install pipelines for DelayedProxy");
+        }
     };
 
     let cores = runtime.context().unwrap().active_cores.clone();
@@ -305,7 +318,7 @@ pub fn main() {
         let cmd_quit = Command::new("quit");
         let shim_cmd = Command::new(":").subcommand(cmd_print).subcommand(cmd_quit);
         let mut rl = Editor::<()>::new().unwrap();
-        println!("enter commands or press ctrl-c to terminate TrafficEngine ...");
+        println!("enter commands or press ctrl-c to terminate TcpEngine ...");
         loop {
             let readline = rl.readline(">> ");
             match readline {
@@ -354,7 +367,7 @@ pub fn main() {
             }
         }
     } else {
-        println!("press ctrl-c to terminate TrafficEngine ...");
+        println!("press ctrl-c to terminate TcpEngine ...");
         while running.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(200 as u64)); // Sleep for a bit
         }

@@ -1,9 +1,8 @@
 use e2d2::operators::{ReceiveBatch, Batch, merge_auto, SchedulingPolicy};
 use e2d2::scheduler::{Runnable, Scheduler, StandaloneScheduler};
 use e2d2::allocators::CacheAligned;
-use e2d2::headers::Header;
 use e2d2::interface::*;
-use e2d2::queues::{new_mpsc_queue_pair, MpscProducer};
+use e2d2::queues::new_mpsc_queue_pair;
 
 #[cfg(feature = "profiling")]
 use std::sync::atomic::Ordering;
@@ -20,8 +19,6 @@ use netfcts::tasks;
 use netfcts::tasks::private_etype;
 use netfcts::{prepare_checksum_and_ttl, RunConfiguration};
 use netfcts::set_header;
-use netfcts::remove_tcp_options;
-use netfcts::make_reply_packet;
 use netfcts::recstore::{Extension, ProxyRecStore, Store64};
 use netfcts::comm::PipelineId;
 
@@ -35,8 +32,6 @@ use netfcts::tasks::TaskType;
 use ::{Timeouts, FnProxyPayload};
 use get_server_addresses;
 
-const MIN_FRAME_SIZE: usize = 60; // without fcs
-
 const TIMER_WHEEL_RESOLUTION_MS: u64 = 10;
 const TIMER_WHEEL_SLOTS: usize = 1002;
 const TIMER_WHEEL_SLOT_CAPACITY: usize = 2500;
@@ -45,7 +40,7 @@ const TIMER_WHEEL_SLOT_CAPACITY: usize = 2500;
 /// a port (@pci) and its associated kernel network port (@kni) which the current core (@core) serves.
 /// The kni port is used to utilize protocol stacks of the kernel, e.g. ARP, ICMP, etc.
 /// For this purpose Kni has been assigned one or more MAC and IP addresses. Kni may be either a native Kni or a Virtio port.
-pub fn setup_delayed_proxy<F1, F2>(
+pub fn setup_simple_proxy<F1, F2>(
     core: i32,
     pci: CacheAligned<PortQueueTxBuffered>,
     kni: CacheAligned<PortQueue>,
@@ -110,9 +105,6 @@ pub fn setup_delayed_proxy<F1, F2>(
         }
     }
 
-    // we need this queue pair for the delayed bindrequest
-    let (mut producer, consumer) = new_mpsc_queue_pair();
-
     // setting up a a reverse message channel between this pipeline and the RunTime thread
     debug!("{} setting up reverse channel", pipeline_id);
     let (remote_tx, rx) = channel::<MessageTo<ProxyRecStore>>();
@@ -125,36 +117,6 @@ pub fn setup_delayed_proxy<F1, F2>(
     let name = String::from("Kni2Pci");
     sched.add_runnable(Runnable::from_task(uuid, name, forward2pci).move_ready());
 
-    struct PduAllocator<'a> {
-        pdu_batch: Option<Vec<Pdu<'a>>>,
-    }
-
-    impl<'a> PduAllocator<'a> {
-        fn new() -> PduAllocator<'a> {
-            PduAllocator {
-                pdu_batch: Pdu::new_pdu_array(),
-            }
-        }
-
-        fn get_pdu(&mut self) -> Option<Pdu<'a>> {
-            if self.pdu_batch.is_some() {
-                if self.pdu_batch.as_ref().unwrap().is_empty() {
-                    self.pdu_batch = Pdu::new_pdu_array();
-                    if self.pdu_batch.is_some() {
-                        self.pdu_batch.as_mut().unwrap().pop()
-                    } else {
-                        None
-                    }
-                } else {
-                    self.pdu_batch.as_mut().unwrap().pop()
-                }
-            } else {
-                None
-            }
-        }
-    }
-
-    let mut packet_allocator = PduAllocator::new();
     let thread_id = format!("<c{}, rx{}>: ", core, pci.port_queue.rxq());
     let tcp_min_port = cm.tcp_port_base();
     let me_clone = me.clone();
@@ -219,23 +181,9 @@ pub fn setup_delayed_proxy<F1, F2>(
         ];
     }
 
-    let delayed_binding_closure =
+    let simple_proxy_closure =
         // this is the main closure containing the proxy service logic
         box move |pdu: &mut Pdu| {
-            // this is the major closure for TCP processing
-
-            #[inline]
-            fn client_syn_received(p: &mut Pdu, c: &mut ProxyConnection) {
-                c.client_mac = p.headers().mac(0).src;
-                //c.set_sock((h.ip.src(), h.tcp.src_port())); this is redundant, as sock is set when c is allocated
-                remove_tcp_options(p);
-                make_reply_packet(p, 1);
-                //generate seq number:
-                c.c_seqn = (unsafe { _rdtsc() } << 8) as u32;
-                p.headers_mut().tcp_mut(2).set_seq_num(c.c_seqn);
-                c.ackn_p2c = p.headers().tcp(2).ack_num();
-                prepare_checksum_and_ttl(p);
-            }
 
             fn client_to_server<F>(
                 p: &mut Pdu,
@@ -309,116 +257,14 @@ pub fn setup_delayed_proxy<F1, F2>(
                     }
                     tcp.set_seq_num(newseqn);
                     c.ackn_p2c = newackn;
+
                 }
                 if p.headers().tcp(2).fin_flag() { c.seqn.ack_for_fin_p2c = newseqn.wrapping_add(tcp_payload_size(p) as u32 + 1); }
 
                 prepare_checksum_and_ttl(p);
             }
 
-            /// attention: after calling select_server, p points to a different mbuf and has different headers
-            /// selects the server by calling the closure, sends SYN to server
-            fn select_server<F>(
-                p: &mut Pdu,
-                c: &mut ProxyConnection,
-                me: &Me,
-                servers: &Vec<L234Data>,
-                f_select_server: &F,
-                mut syn: Pdu<'static>,
-            ) where
-                F: Fn(&mut ProxyConnection, &Vec<L234Data>),
-            {
-                let ip;
-                let tcp;
-                let payload_sz;
-                {
-                    // save clone of payload packet to connection state
-                    let p_clone = Box::new(p.clone()); // creates reference to the mbuf in p
-                    payload_sz = tcp_payload_size(&p_clone);
-                    c.payload_packet = Some(p_clone);
-                    f_select_server(c, servers);
-                    c.c2s_inserted_bytes = tcp_payload_size(c.payload_packet.as_ref().unwrap()) as i32 - payload_sz as i32;
 
-                    // set the header for the selected server in the payload packet p and its clone p_clone
-                    set_header(&servers[c.server_index()], c.port(), p, &me.l234.mac, me.ip_s);
-                    let ok = syn.push_header(p.headers().mac(0));
-                    assert!(ok);
-                    // this is a little bit tricky: we replace the borrowed packet of the closure, with the syn packet
-                    // note, this just replaces pointers, e.g. the pointer to the orignal mbuf is replaced with the pointer to the new mbuf in the syn packet
-                    let mut old_p = unsafe { p.replace(syn) };
-                    old_p.dereference_mbuf(); // as packet_in no longer references the original mbuf
-                debug!("old_p.refcnt= {}, old_p= {}", old_p.refcnt(), old_p);
-                    ip = old_p.headers().ip(1).clone();
-                    tcp = old_p.headers().tcp(2).clone();
-                }
-
-                // the new syn packet is the parsed proxy for p
-                //let mut new_syn= p.clone_without_ref_counting();
-
-                let ok = p.push_header(&ip);
-                assert!(ok);
-                let ok = p.push_header(&tcp);
-                assert!(ok);
-                {
-                    let hs = p.headers_mut();
-                    hs.ip_mut(1).trim_length_by(payload_sz as u16);
-                    let tcp = hs.tcp_mut(2);
-                    c.seqn.f_seqn = tcp.seq_num().wrapping_sub(1);
-                    unsafe { tcp.set_seq_num(c.seqn.f_seqn); }
-                    tcp.set_syn_flag();
-                    tcp.set_ack_num(0u32);
-                    tcp.unset_ack_flag();
-                    tcp.unset_psh_flag();
-                }
-
-                prepare_checksum_and_ttl(p);
-            }
-
-            ///returns ACK for SYN to server, and sends payload packet to server
-            fn server_synack_received(
-                p: &mut Pdu,
-                c: &mut ProxyConnection,
-                producer: &mut MpscProducer,
-            ) {
-                trace!("syn_ack_recv: p.refcnt= {}", p.refcnt());
-                // correction for server side seq numbers
-                let delta = c.c_seqn.wrapping_sub(p.headers().tcp(2).seq_num());
-                c.c_seqn = delta;
-                remove_tcp_options(p);
-                make_reply_packet(p, 1);
-                p.headers_mut().tcp_mut(2).unset_syn_flag();
-                unsafe {
-                    c.seqn.f_seqn = c.seqn.f_seqn.wrapping_add(1);
-                    p.headers_mut().tcp_mut(2).set_seq_num(c.seqn.f_seqn);
-                }
-                //debug!("data_len= { }, p= { }",p.data_len(), p);
-                prepare_checksum_and_ttl(p);
-                // we clone the packet and send it via the extra queue, the original p gets discarded
-                let p_clone = p.clone();
-                trace!("syn_ack_recv: p_clone/p.refcnt= {}/{}", p_clone.refcnt(), p.refcnt());
-                trace!("last ACK of three way handshake towards server: L4: {}", p_clone.headers().tcp(2));
-                producer.enqueue_one(p_clone);
-
-                if c.payload_packet.is_some() {
-                    let mut payload_packet = c.payload_packet.take().unwrap();
-                    payload_packet.replace_header(2, &Header::Tcp(p.headers_mut().tcp_mut(2)));  // same tcp header as in Ack packet
-                    {
-                        let h_tcp = payload_packet.headers_mut().tcp_mut(2);
-                        h_tcp.set_psh_flag();
-                    }
-
-                    if payload_packet.data_len() < MIN_FRAME_SIZE {
-                        let n_padding_bytes = MIN_FRAME_SIZE - payload_packet.data_len();
-                        debug!("padding with {} 0x0 bytes", n_padding_bytes);
-                        payload_packet.add_padding(n_padding_bytes);
-                    }
-
-                    prepare_checksum_and_ttl(&mut payload_packet);
-                    c.ackn_p2s = p.headers().tcp(2).ack_num();
-                    trace!("delayed packet: { }", payload_packet.headers());
-                    assert_eq!(payload_packet.refcnt(), 1);
-                    producer.enqueue_one_boxed(payload_packet);
-                }
-            }
 
 // *****  the closure starts here with processing
 
@@ -520,7 +366,8 @@ pub fn setup_delayed_proxy<F1, F2>(
                     }
                 }
                 _ => {
-                    // we use a clone for reading tcp header to avoid immutable borrow. But attention, this clone does not update, when we change the original header!
+                    // We use a clone for reading tcp header to avoid immutable borrow.
+                    // But attention, this clone does not update, when we change the original header!
                     let tcp = pdu.headers().tcp(2).clone();
                     let src_sock = (pdu.headers().ip(1).src(), tcp.src_port());
 
@@ -554,12 +401,20 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 debug!("{} state= {:?}, diff= {}, tcp= {}", thread_id, old_s_state, diff, tcp);
                             } else if tcp.syn_flag() {
                                 if old_c_state == TcpState::Closed {
-                                    // replies with a SYN-ACK to client:
-                                    client_syn_received(pdu, &mut c);
+                                    // **** valid SYN received from client
+                                    // save client MAC for return packets
+                                    c.client_mac = pdu.headers().mac(0).src;
+                                    // select server
+                                    f_select_server(c, &servers);
+                                    // and forward SYN
+                                    set_header(&servers[c.server_index()], c.port(), pdu, &me.l234.mac, me.ip_s);
+                                    prepare_checksum_and_ttl(pdu);
                                     c.c_push_state(TcpState::SynSent);
-                                    trace!("{} (SYN-)ACK to client, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
+                                    c.s_push_state(TcpState::SynReceived);
+                                    trace!("{} forward SYN to server, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
                                     counter_c[TcpStatistics::RecvSyn] += 1;
-                                    counter_c[TcpStatistics::SentSynAck] += 1;
+                                    counter_s[TcpStatistics::SentSyn] += 1;
+                                    counter_c[TcpStatistics::RecvPayload] += 1;
 
                                     c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
                                     group_index = 1;
@@ -569,8 +424,15 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 #[cfg(feature = "profiling")]
                                 time_adders[2].add_diff(unsafe { _rdtsc() } - timestamp_entry);
                             } else if tcp.ack_flag() && old_c_state == TcpState::SynSent {
-                                c.c_push_state(TcpState::Established);
+                                // valid ACK2 (reply to SYN+ACK) received from client
                                 counter_c[TcpStatistics::RecvSynAck2] += 1;
+                                counter_s[TcpStatistics::SentSynAck2] += 1;
+                                counter_c[TcpStatistics::RecvPayload] += 1;
+                                set_header(&servers[c.server_index()], c.port(), pdu, &me.l234.mac, me.ip_s);
+                                c.s_push_state(TcpState::Established);
+                                c.c_push_state(TcpState::Established);
+                                prepare_checksum_and_ttl(pdu);
+                                group_index = 1;
                                 #[cfg(feature = "profiling")]
                                 time_adders[4].add_diff(unsafe { _rdtsc() } - timestamp_entry);
                             } else if tcp.fin_flag() {
@@ -598,26 +460,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                                     c.set_release_cause(ReleaseCause::ActiveClose);
                                     counter_c[TcpStatistics::RecvFin] += 1;
                                     c.c_push_state(TcpState::FinWait1);
-                                    if old_s_state < TcpState::Established {
-                                        // in case the server connection is still not established
-                                        // proxy must close connection and sends Fin-Ack to client
-                                        make_reply_packet(pdu, 1);
-                                        pdu.headers_mut().tcp_mut(2).set_ack_flag();
-                                        c.c_seqn = c.c_seqn.wrapping_add(1);
-                                        pdu.headers_mut().tcp_mut(2).set_seq_num(c.c_seqn);
-                                        //debug!("data_len= { }, p= { }",p.data_len(), p);
-                                        prepare_checksum_and_ttl(pdu);
-                                        c.s_push_state(TcpState::LastAck); // pretend that server received the FIN
-                                        c.s_set_release_cause(ReleaseCause::PassiveClose);
-                                        counter_c[TcpStatistics::SentFinPssv] += 1;
-                                        counter_c[TcpStatistics::SentAck4Fin] += 1;
-                                        // do not use the clone "tcp" here:
-                                        c.seqn.ack_for_fin_p2c = c.c_seqn.wrapping_add(1);
-                                        //TODO send restart to server?
-                                        trace!("FIN-ACK to client, L3: { }, L4: { }", pdu.headers().ip(1), tcp);
-                                    } else {
-                                        counter_s[TcpStatistics::SentFin] += 1;
-                                    }
+                                    counter_s[TcpStatistics::SentFin] += 1;
                                     group_index = 1;
                                 }
                             } else if tcp.rst_flag() {
@@ -659,20 +502,6 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 c.c_push_state(TcpState::Closed);
                                 counter_c[TcpStatistics::RecvAck4Fin] += 1;
                                 counter_s[TcpStatistics::SentAck4Fin] += 1;
-                            } else if old_c_state == TcpState::Established
-                                && old_s_state == TcpState::Listen {
-                                // should be the first payload packet from client
-                                let syn = packet_allocator.get_pdu().unwrap();
-                                select_server(pdu, &mut c, &me, &servers, &f_select_server, syn);
-                                //trace!("after  select_server: p.refcnt = {}, packet_in.refcnt() = {}", pdu.refcnt(), pdu_in.refcnt());
-                                debug!("{} SYN packet to server - L3: {}, L4: {}", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
-                                c.s_init();
-                                c.s_push_state(TcpState::SynReceived);
-                                counter_c[TcpStatistics::RecvPayload] += 1;
-                                counter_s[TcpStatistics::SentSyn] += 1;
-                                group_index = 1;
-                                #[cfg(feature = "profiling")]
-                                time_adders[5].add_diff(unsafe { _rdtsc() } - timestamp_entry);
                             } else if old_s_state < TcpState::SynReceived || old_c_state < TcpState::Established {
                                 warn!(
                                     "{} unexpected client-side TCP packet on port {}/{} in client/server state {:?}/{:?}, sending to KNI i/f",
@@ -685,7 +514,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 counter_c[TcpStatistics::Unexpected] += 1;
                                 group_index = 2;
                             } else {
-                                trace! {"c2s: nothing to do?, tcp= {}, tcp_payload_size={}, expected ackn_for_fin ={}", tcp, tcp_payload_size(pdu), unsafe { c.seqn.ack_for_fin_p2c }};
+                                trace! {"c2s: nothing to do?, tcp= {}, tcp_payload_size={}, expected ackn_for_fin ={}", tcp, tcp_payload_size(pdu), unsafe { c.seqn.ack_for_fin_p2c }}
                             }
 
                             if c.client_state() == TcpState::Closed && c.server_state() == TcpState::Closed {
@@ -695,6 +524,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                             // once we established a two-way e2e-connection, we always forward the packets
                             if old_s_state >= TcpState::Established && old_s_state < TcpState::Closed
                                 && old_c_state >= TcpState::Established {
+                                counter_c[TcpStatistics::RecvPayload] += 1;
                                 client_to_server(pdu, &mut c, &me, &servers, &f_process_payload_c_s);
                                 group_index = 1;
                                 #[cfg(feature = "profiling")]
@@ -718,12 +548,13 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 if tcp.ack_flag() && tcp.syn_flag() {
                                     counter_s[TcpStatistics::RecvSynAck] += 1;
                                     if old_s_state == TcpState::SynReceived {
-                                        c.s_push_state(TcpState::Established);
-                                        debug!("{} established two-way client server connection, SYN-ACK received: L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
-                                        server_synack_received(pdu, &mut c, &mut producer);
-                                        counter_s[TcpStatistics::SentSynAck2] += 1;
-                                        counter_s[TcpStatistics::SentPayload] += 1;
-                                        group_index = 0; // delayed payload packets are sent via extra queue
+                                        // ****  valid SYN+ACK received from server
+                                        debug!("{}  SYN-ACK received from server : L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
+                                        // translate packet and forward to client
+                                        server_to_client(pdu, &mut c, &me);
+                                        counter_s[TcpStatistics::RecvPayload] += 1;
+                                        counter_c[TcpStatistics::SentSynAck] += 1;
+                                        group_index = 1;
                                     } else {
                                         warn!("{} received SYN-ACK in wrong state: {:?}", thread_id, old_s_state);
                                         group_index = 0;
@@ -801,6 +632,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 if old_s_state >= TcpState::Established
                                     && old_c_state >= TcpState::Established
                                     && old_c_state < TcpState::Closed {
+                                    counter_s[TcpStatistics::RecvPayload] += 1;
                                     // translate packets and forward to client
                                     server_to_client(pdu, &mut c, &me);
                                     group_index = 1;
@@ -840,7 +672,7 @@ pub fn setup_delayed_proxy<F1, F2>(
 
     let mut l4groups = l2_input_stream.group_by(
         3,
-        delayed_binding_closure,
+        simple_proxy_closure,
         sched,
         "L4-Groups".to_string(),
         uuid_l4groupby,
@@ -859,7 +691,4 @@ pub fn setup_delayed_proxy<F1, F2>(
     tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pic, TaskType::Pipe2Pci))
         .unwrap();
 
-    let uuid_consumer = tasks::install_task(sched, "BypassPipe", consumer.send(pci.clone()));
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_consumer, TaskType::BypassPipe))
-        .unwrap();
 }

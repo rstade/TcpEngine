@@ -13,7 +13,7 @@ vdev        = [ "net_kni0" ]    # for use of vdev with KNI PMD, see https://dpdk
 
 [proxyengine]
 
-engine       = {  port=999, timeouts= { established= 2000 }, detailed_records= true }
+engine       = {  mode= "DelayedProxy", port=999, timeouts= { established= 2000 }, detailed_records= true }
 
 targets      = [ { id = "tcpgen_0", ip = "192.168.222.3", mac="3c:fd:fe:9e:ce:4c" , port = 65535 },
                  { id = "tcpgen_1", ip = "192.168.222.4", mac="3c:fd:fe:9e:ce:4c" , port = 65535 },

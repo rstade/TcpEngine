@@ -383,6 +383,6 @@ pub fn run_test(test_type: TestType) {
     mtx.send(MessageFrom::Exit).unwrap();
     thread::sleep(Duration::from_millis(2000));
     println!("*** *** PASSED *** ***");
-    debug!("terminating TrafficEngine");
+    debug!("terminating TcpEngine");
     process::exit(0);
 }

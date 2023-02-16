@@ -22,11 +22,12 @@ extern crate core;
 extern crate rand;
 
 pub mod nftraffic;
-pub mod nfproxy;
+pub mod nfdelayedproxy;
 pub mod run_test;
 mod tcpmanager;
 pub mod proxymanager;
 pub mod netfcts;
+pub mod nfsimpleproxy;
 
 use std::arch::x86_64::_rdtsc;
 use netfcts::tcp_common::{CData, L234Data, ReleaseCause, TcpState, TcpStatistics};
@@ -51,10 +52,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bincode::serialize_into;
+use rand::Rng;
 use netfcts::recstore::{Extension, Store64};
 use netfcts::system::{get_mac_from_ifname};
 use netfcts::tcp_common::tcp_payload_size;
-use nfproxy::setup_delayed_proxy;
+use nfdelayedproxy::setup_delayed_proxy;
+use nfsimpleproxy::setup_simple_proxy;
 use nftraffic::setup_generator;
 
 pub trait FnPayload =
@@ -260,49 +263,54 @@ pub fn get_tcp_generator_nfg() -> impl NFGfn {
 
 pub type FnSelectTarget = fn(&mut ProxyConnection, &Vec<L234Data>) -> ();
 
+// this function selects the target server to use for a new incoming TCP connection received by the tcp proxy
+fn select_target_by_payload(c: &mut ProxyConnection, servers: &Vec<L234Data>) {
+    let cdata: CData =
+        bincode::deserialize::<CData>(c.payload_packet.as_ref().unwrap().get_payload(2)).expect("cannot deserialize CData");
+    //info!("cdata = {:?}", cdata);
+    for (i, l234) in servers.iter().enumerate() {
+        if l234.port == cdata.reply_socket.port() && l234.ip == u32::from(*cdata.reply_socket.ip()) {
+            c.set_server_index(i as u8);
+            break;
+        }
+    }
+}
+
+fn select_target_randomly(c: &mut ProxyConnection, servers: &Vec<L234Data>) {
+    let server_count = servers.len();
+    let mut rng = rand::thread_rng();
+    let random_number = rng.gen_range(0..server_count);
+    c.set_server_index(random_number as u8);
+}
+
+// this function may modify the payload of client to server packets in a TCP connection
+fn process_payload_c_s(_c: &mut ProxyConnection, _payload: &mut [u8], _tailroom: usize) {
+    /*
+    if let IResult::Done(_, c_tag) = parse_tag(payload) {
+        let userdata: &mut MyData = &mut c.userdata
+            .as_mut()
+            .unwrap()
+            .mut_userdata()
+            .downcast_mut()
+            .unwrap();
+        userdata.c2s_count += payload.len();
+        debug!(
+            "c->s (tailroom { }, {:?}): {:?}",
+            tailroom,
+            userdata,
+            c_tag,
+        );
+    }
+
+    unsafe {
+        let payload_sz = payload.len(); }
+        let p_payload= payload[0] as *mut u8;
+        process_payload(p_payload, payload_sz, tailroom);
+    } */
+}
+
 /// return the closure which creates the network function graph for the delayed tcp proxy
 pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl NFGfn {
-    // this function may modify the payload of client to server packets in a TCP connection
-    fn process_payload_c_s(_c: &mut ProxyConnection, _payload: &mut [u8], _tailroom: usize) {
-        /*
-        if let IResult::Done(_, c_tag) = parse_tag(payload) {
-            let userdata: &mut MyData = &mut c.userdata
-                .as_mut()
-                .unwrap()
-                .mut_userdata()
-                .downcast_mut()
-                .unwrap();
-            userdata.c2s_count += payload.len();
-            debug!(
-                "c->s (tailroom { }, {:?}): {:?}",
-                tailroom,
-                userdata,
-                c_tag,
-            );
-        }
-
-        unsafe {
-            let payload_sz = payload.len(); }
-            let p_payload= payload[0] as *mut u8;
-            process_payload(p_payload, payload_sz, tailroom);
-        } */
-    }
-
-    // this function selects the target server to use for a new incoming TCP connection received by the tcp proxy
-    fn select_target_by_payload(c: &mut ProxyConnection, servers: &Vec<L234Data>) {
-        //let cdata: CData = serde_json::from_slice(&c.payload).expect("cannot deserialize CData");
-        //no_calls +=1;
-        let cdata: CData = bincode::deserialize::<CData>(c.payload_packet.as_ref().unwrap().get_payload(2))
-            .expect("cannot deserialize CData");
-        //info!("cdata = {:?}", cdata);
-        for (i, l234) in servers.iter().enumerate() {
-            if l234.port == cdata.reply_socket.port() && l234.ip == u32::from(*cdata.reply_socket.ip()) {
-                c.set_server_index(i as u8);
-                break;
-            }
-        }
-    }
-
     let select_target = select_target.unwrap_or(select_target_by_payload);
 
     move |core: i32,
@@ -323,6 +331,30 @@ pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl 
         }
     }
 }
+
+/// return the closure which creates the network function graph for the tcp proxy w/o delayed binding
+pub fn get_simple_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl NFGfn {
+    let select_target = select_target.unwrap_or(select_target_randomly);
+
+    move |core: i32,
+          pci: Option<PciQueueType>,
+          kni: Option<KniQueueType>,
+          s: &mut StandaloneScheduler,
+          config: RunConfiguration<Configuration, Store64<Extension>>| {
+        if pci.is_some() && kni.is_some() {
+            setup_simple_proxy(
+                core,
+                pci.unwrap(),
+                kni.unwrap(),
+                s,
+                config,
+                select_target.clone(),
+                process_payload_c_s.clone(),
+            );
+        }
+    }
+}
+
 
 pub fn initialize_engine(indirectly: bool) -> (RunTime<Configuration, Store64<Extension>>, EngineMode, Arc<AtomicBool>) {
     env_logger::init();

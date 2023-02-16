@@ -1,12 +1,12 @@
 ## TcpEngine Overview
 
-TcpEngine is the successor of [TrafficEngine](https://github.com/rstade/TrafficEngine) and [ProxyEngine](https://github.com/silverengine-de/proxyengine). It combines the functionality ob both projects into a single codebase. TcpEngine can either run as stateful user-space TCP traffic generator or as a pass-through TCP proxy, optionally with delayed binding. 
+TcpEngine is the successor of [TrafficEngine](https://github.com/rstade/TrafficEngine) and [ProxyEngine](https://github.com/silverengine-de/proxyengine). It combines the functionality ob both engines into a single codebase. TcpEngine can either run as stateful user-space TCP traffic generator or as a pass-through TCP proxy, optionally with delayed binding. 
 
 
 ## TcpEngine as TCP Traffic Generator
 
 TcpEngine contains a stateful user-space TCP traffic generator written in Rust with following properties
-* high performance: some hundred thousand TCP connections per second (cps) per core. For comparison, modern web servers support some ten thousand cps per core, e.g. https://www.nginx.com/blog/testing-the-performance-of-nginx-and-nginx-plus-web-servers/
+* high performance: some hundred thousand TCP connections per second (cps) per core. 
 * supports client and server TCP roles concurrently
 * multi-core, shared nothing, locking-free architecture 
 * receive flow steering (RFS) by NIC
@@ -15,7 +15,7 @@ It may be used for (load-)testing  TCP based application servers and TCP proxies
 
 Multi-core scaling is supported by steering packets of the same TCP connection based on the TCP port or the IP address to the appropriate core which handles that connection.  Therefore port resources can be assigned to cores (based on paramater _dst_port_mask_ in the configuration file). Alternatively, if the NIC does not support port masks, steering can be based on the IP address.   
 
-TcpEngine builds on [Netbricks](https://github.com/NetSys/NetBricks) which itself utilizes DPDK for user-space networking. Starting with version 0.2.0 more generic code is moved to an application independent crate _netfcts_ (in sub-directory netfcts).
+TcpEngine builds on [Netbricks](https://github.com/NetSys/NetBricks) which itself utilizes DPDK for user-space networking. 
 
 **_Testing_**
 
@@ -41,9 +41,9 @@ see [TrafficEngine](https://github.com/rstade/TrafficEngine) and [ProxyEngine](h
 Currently only a basic TCP state machine without retransmission, flow control, etc., is implemented.
 
 
-## TcpEngine as TCP-Proxy
+## TcpEngine as (reverse) TCP-Proxy
 
-TcpEngine can run as a user-space TCP-proxy written in Rust with following properties
+TcpEngine can run as a user-space TCP-proxy with following properties
 * TCP pass-through
 * customizable delayed binding
 * high performance: more than **1 million TCP connections opened and closed per second using 3 cores**

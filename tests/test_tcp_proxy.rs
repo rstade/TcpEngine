@@ -29,7 +29,8 @@ use tcp_lib::netfcts::io::{print_tcp_counters, print_rx_tx_counters};
 use tcp_lib::netfcts::conrecord::{HasTcpState, ConRecord};
 use tcp_lib::netfcts::comm::{MessageFrom, MessageTo};
 use tcp_lib::netfcts::recstore::Extension;
-use tcp_lib::{EngineMode, get_delayed_tcp_proxy_nfg, initialize_engine, ProxyConnection, setup_pipelines};
+use tcp_lib::{EngineMode, get_delayed_tcp_proxy_nfg, get_simple_tcp_proxy_nfg, initialize_engine, ProxyConnection,
+          setup_pipelines};
 
 
 #[test]
@@ -62,22 +63,40 @@ fn delayed_binding_proxy() {
 
     runtime.start_schedulers().expect("cannot start schedulers");
 
-    if mode == EngineMode::DelayedProxy {
-        runtime
-            .install_pipeline_on_cores(Box::new(
-                move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
-                    setup_pipelines(
-                        core,
-                        pmd_ports,
-                        s,
-                        run_configuration_cloned.clone(),
-                        Box::new(get_delayed_tcp_proxy_nfg(Some(f_by_payload))).clone(),
-                    );
-                },
-            ))
-            .expect("cannot install pipelines for DelayedProxy");
-    } else {
-        error!("mode must be DelayedProxy for this test");
+    match mode {
+        EngineMode::DelayedProxy => {
+            runtime
+                .install_pipeline_on_cores(Box::new(
+                    move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
+                        setup_pipelines(
+                            core,
+                            pmd_ports,
+                            s,
+                            run_configuration_cloned.clone(),
+                            Box::new(get_delayed_tcp_proxy_nfg(Some(f_by_payload))).clone(),
+                        );
+                    },
+                ))
+                .expect("cannot install pipelines for DelayedProxy");
+        }
+        EngineMode::SimpleProxy => {
+            runtime
+                .install_pipeline_on_cores(Box::new(
+                    move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
+                        setup_pipelines(
+                            core,
+                            pmd_ports,
+                            s,
+                            run_configuration_cloned.clone(),
+                            Box::new(get_simple_tcp_proxy_nfg(None)).clone(),
+                        );
+                    },
+                ))
+                .expect("cannot install pipelines for DelayedProxy");
+        }
+        _ => {
+            error!("mode must be either SimpleProxy or DelayedProxy for this test");
+        }
     }
 
     let cores = runtime.context().unwrap().active_cores.clone();
@@ -323,9 +342,8 @@ fn delayed_binding_proxy() {
         assert!(
             counters[TcpStatistics::SentFin] + counters[TcpStatistics::SentFinPssv] <= counters[TcpStatistics::RecvAck4Fin]
         );
-        assert_eq!(counters[TcpStatistics::SentSyn], counters[TcpStatistics::SentPayload]);
         assert_eq!(
-            tcp_counters_c.get(&p).unwrap()[TcpStatistics::RecvSyn],
+            counters[TcpStatistics::RecvPayload],
             tcp_counters_c.get(&p).unwrap()[TcpStatistics::RecvPayload]
         );
     }
