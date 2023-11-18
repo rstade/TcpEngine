@@ -10,7 +10,7 @@ ports       = [
                      { name="kni:1", rxd=64, txd=64, cores = [1], k_cores = [1], namespace="nskni", mac="a0:36:9f:82:9c:fc", ipnet="192.168.222.1/24" },
                      { name="virtio:virtio_user0,path=/dev/vhost-net,iface=tap00,queues={},queue_size=1024", rxd=1024, txd=1024, cores = [1],  namespace="nsvirtio00", mac="a0:36:9f:82:9c:fc", ipnet="192.168.222.1/24"  }
               ] 
-vdev        = [ "net_kni0" ]    # for use of vdev with KNI PMD, see https://dpdk.org/doc/guides/nics/kni.html
+vdev        = [ "net_kni0" ]    # for use of vdev with KNI PMD, see https://doc.dpdk.org/guides-20.11/nics/kni.html
 
 [engine]
 

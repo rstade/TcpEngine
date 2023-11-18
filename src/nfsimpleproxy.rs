@@ -144,7 +144,7 @@ pub fn setup_simple_proxy<F1, F2>(
 
     let receive_pci = ReceiveBatch::new(pci.clone());
     let l2_input_stream = merge_auto(
-        vec![box consumer_timerticks.set_urgent(), box receive_pci],
+        vec![Box::new(consumer_timerticks.set_urgent()), Box::new(receive_pci)],
         SchedulingPolicy::LongestQueue,
     );
 
@@ -183,7 +183,7 @@ pub fn setup_simple_proxy<F1, F2>(
 
     let simple_proxy_closure =
         // this is the main closure containing the proxy service logic
-        box move |pdu: &mut Pdu| {
+        Box::new( move |pdu: &mut Pdu| {
 
             fn client_to_server<F>(
                 p: &mut Pdu,
@@ -414,7 +414,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                     trace!("{} forward SYN to server, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
                                     counter_c[TcpStatistics::RecvSyn] += 1;
                                     counter_s[TcpStatistics::SentSyn] += 1;
-                                    counter_c[TcpStatistics::RecvPayload] += 1;
+                                    //counter_c[TcpStatistics::RecvPayload] += 1;
 
                                     c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
                                     group_index = 1;
@@ -427,7 +427,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                 // valid ACK2 (reply to SYN+ACK) received from client
                                 counter_c[TcpStatistics::RecvSynAck2] += 1;
                                 counter_s[TcpStatistics::SentSynAck2] += 1;
-                                counter_c[TcpStatistics::RecvPayload] += 1;
+                                //counter_c[TcpStatistics::RecvPayload] += 1;
                                 set_header(&servers[c.server_index()], c.port(), pdu, &me.l234.mac, me.ip_s);
                                 c.s_push_state(TcpState::Established);
                                 c.c_push_state(TcpState::Established);
@@ -524,7 +524,8 @@ pub fn setup_simple_proxy<F1, F2>(
                             // once we established a two-way e2e-connection, we always forward the packets
                             if old_s_state >= TcpState::Established && old_s_state < TcpState::Closed
                                 && old_c_state >= TcpState::Established {
-                                counter_c[TcpStatistics::RecvPayload] += 1;
+                                counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
+                                counter_s[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                 client_to_server(pdu, &mut c, &me, &servers, &f_process_payload_c_s);
                                 group_index = 1;
                                 #[cfg(feature = "profiling")]
@@ -552,7 +553,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                         debug!("{}  SYN-ACK received from server : L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
                                         // translate packet and forward to client
                                         server_to_client(pdu, &mut c, &me);
-                                        counter_s[TcpStatistics::RecvPayload] += 1;
+                                        //counter_s[TcpStatistics::SentPayload] += 1;
                                         counter_c[TcpStatistics::SentSynAck] += 1;
                                         group_index = 1;
                                     } else {
@@ -632,9 +633,10 @@ pub fn setup_simple_proxy<F1, F2>(
                                 if old_s_state >= TcpState::Established
                                     && old_c_state >= TcpState::Established
                                     && old_c_state < TcpState::Closed {
-                                    counter_s[TcpStatistics::RecvPayload] += 1;
+                                    counter_s[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
                                     // translate packets and forward to client
                                     server_to_client(pdu, &mut c, &me);
+                                    counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                     group_index = 1;
                                     b_unexpected = false;
                                     #[cfg(feature = "profiling")]
@@ -668,7 +670,7 @@ pub fn setup_simple_proxy<F1, F2>(
                 cm.release_port(sport, &mut wheel);
             }
             group_index
-        };
+        });
 
     let mut l4groups = l2_input_stream.group_by(
         3,
@@ -681,7 +683,7 @@ pub fn setup_simple_proxy<F1, F2>(
     let pipe2kni = l4groups.get_group(2).unwrap().send(kni.clone());
     let l4pciflow = l4groups.get_group(1).unwrap();
     let l4dumpflow = l4groups.get_group(0).unwrap().drop();
-    let pipe2pci = merge_auto(vec![box l4pciflow, box l4dumpflow], SchedulingPolicy::LongestQueue).send(pci.clone());
+    let pipe2pci = merge_auto(vec![Box::new(l4pciflow), Box::new(l4dumpflow)], SchedulingPolicy::LongestQueue).send(pci.clone());
 
     let uuid_pipe2kni = tasks::install_task(sched, "Pipe2Kni", pipe2kni);
     tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::Pipe2Kni))

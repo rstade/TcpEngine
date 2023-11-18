@@ -70,7 +70,7 @@ fn delayed_binding_proxy() {
                         pmd_ports,
                         s,
                         run_configuration_cloned.clone(),
-                        Box::new(get_delayed_tcp_proxy_nfg(Some(f_by_payload))).clone(),
+                        &get_delayed_tcp_proxy_nfg(Some(f_by_payload)).clone(),
                     );
                 },
             ))
@@ -87,7 +87,7 @@ fn delayed_binding_proxy() {
         .ports
         .values()
         .filter(|p| p.is_physical() && p.kni_name().is_some())
-        .map(|p| &runtime.context().unwrap().ports[p.kni_name().as_ref().unwrap().clone()])
+        .map(|p| &runtime.context().unwrap().ports[p.kni_name().unwrap()])
         .collect();
 
     let proxy_addr = (

@@ -1,7 +1,7 @@
 #!/bin/bash
 #bricksDir=~/work/NetBricks
 #dpdkBinDir=/usr/local/bin
-linuxif=enp7s0f1
+linuxif=enp5s0f1
 sudo ip link set enp7s0f0 down
 sudo modprobe vfio_pci
 #sudo insmod $bricksDir/3rdparty/dpdk/build/kmod/rte_kni.ko "kthread_mode=multiple carrier=on"

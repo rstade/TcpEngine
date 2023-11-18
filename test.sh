@@ -28,7 +28,7 @@ case $TASK in
         sudo -E env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
         ;;
     test_rfs_port)
-        export RUST_LOG="tcp_lib=debug,test_tcp_proxy=debug,e2d2=info,netfcts=debug"
+        export RUST_LOG="tcp_lib=debug,test_tcp_proxy=debug,e2d2=info,netfcts=debug"tcp
         export RUST_BACKTRACE=1
         executable=`cargo test $2 $3 $4 --no-run --message-format=json --test test_tcp_proxy | jq -r 'select((.profile.test == true) and (.target.name == "test_tcp_proxy")) | .filenames[]'`
         echo $executable

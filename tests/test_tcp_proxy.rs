@@ -34,7 +34,7 @@ use tcp_lib::{EngineMode, get_delayed_tcp_proxy_nfg, get_simple_tcp_proxy_nfg, i
 
 
 #[test]
-fn delayed_binding_proxy() {
+fn tcp_proxy() {
     let (mut runtime, mode, _running) = initialize_engine(true);
     let run_configuration = runtime.run_configuration.clone();
     let configuration = &run_configuration.engine_configuration;
@@ -73,7 +73,7 @@ fn delayed_binding_proxy() {
                             pmd_ports,
                             s,
                             run_configuration_cloned.clone(),
-                            Box::new(get_delayed_tcp_proxy_nfg(Some(f_by_payload))).clone(),
+                            &get_delayed_tcp_proxy_nfg(Some(f_by_payload)).clone(),
                         );
                     },
                 ))
@@ -88,11 +88,11 @@ fn delayed_binding_proxy() {
                             pmd_ports,
                             s,
                             run_configuration_cloned.clone(),
-                            Box::new(get_simple_tcp_proxy_nfg(None)).clone(),
+                            &get_simple_tcp_proxy_nfg(None).clone(),
                         );
                     },
                 ))
-                .expect("cannot install pipelines for DelayedProxy");
+                .expect("cannot install pipelines for SimpleProxy");
         }
         _ => {
             error!("mode must be either SimpleProxy or DelayedProxy for this test");
@@ -107,7 +107,7 @@ fn delayed_binding_proxy() {
         .ports
         .values()
         .filter(|p| p.is_physical() && p.kni_name().is_some())
-        .map(|p| &runtime.context().unwrap().ports[p.kni_name().as_ref().unwrap().clone()])
+        .map(|p| &runtime.context().unwrap().ports[p.kni_name().unwrap()])
         .collect();
 
     let proxy_addr = (
@@ -157,7 +157,7 @@ fn delayed_binding_proxy() {
                     stream.read(&mut buf[..]).unwrap();
                     debug!("server {} received: {}", id, String::from_utf8(buf.to_vec()).unwrap());
                     stream
-                        .write(&format!("Thank You from {}", id).to_string().into_bytes())
+                        .write(&format!("Thank You from {}", id).to_string().into_bytes()) // at least 17 bytes
                         .unwrap();
                 }
             }
@@ -186,6 +186,7 @@ fn delayed_binding_proxy() {
                 stream.set_write_timeout(Some(timeout)).unwrap();
                 stream.set_read_timeout(Some(timeout)).unwrap();
                 match stream.write(&format!("{} stars", ntry).to_string().into_bytes()) {
+                    // at least 7 bytes
                     Ok(_) => {
                         debug!("successfully send {} stars", ntry);
                         let mut buf = [0u8; 256];
@@ -342,10 +343,14 @@ fn delayed_binding_proxy() {
         assert!(
             counters[TcpStatistics::SentFin] + counters[TcpStatistics::SentFinPssv] <= counters[TcpStatistics::RecvAck4Fin]
         );
-        assert_eq!(
-            counters[TcpStatistics::RecvPayload],
-            tcp_counters_c.get(&p).unwrap()[TcpStatistics::RecvPayload]
-        );
+        if configuration.test_size.unwrap() <= 9 {
+            // otherwise the payload bytes are difficult to count
+            assert_eq!(counters[TcpStatistics::RecvPayload], counters[TcpStatistics::SentSyn] * 17);
+            assert_eq!(
+                tcp_counters_c.get(&p).unwrap()[TcpStatistics::RecvPayload],
+                tcp_counters_c.get(&p).unwrap()[TcpStatistics::RecvSyn] * 7
+            );
+        }
     }
 
     mtx.send(MessageFrom::Exit).unwrap();

@@ -1,5 +1,3 @@
-#![feature(box_syntax)]
-#![feature(integer_atomics)]
 #![feature(trait_alias)]
 
 // Logging
@@ -131,7 +129,7 @@ pub fn setup_pipelines<NFG>(
     pmd_ports: HashMap<String, Arc<PmdPort>>,
     sched: &mut StandaloneScheduler,
     run_configuration: RunConfiguration<Configuration, Store64<Extension>>,
-    nfg: Box<NFG>,
+    nfg: &NFG,
 ) where
     NFG: FnNetworkFunctionGraph,
 {
@@ -303,7 +301,7 @@ fn process_payload_c_s(_c: &mut ProxyConnection, _payload: &mut [u8], _tailroom:
     }
 
     unsafe {
-        let payload_sz = payload.len(); }
+        let payload_sz = payload.len();
         let p_payload= payload[0] as *mut u8;
         process_payload(p_payload, payload_sz, tailroom);
     } */

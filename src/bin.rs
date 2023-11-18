@@ -249,7 +249,7 @@ pub fn main() {
                             pmd_ports,
                             s,
                             run_configuration_cloned.clone(),
-                            Box::new(get_tcp_generator_nfg()).clone(),
+                            &get_tcp_generator_nfg().clone(),
                         );
                     },
                 ))
@@ -264,7 +264,7 @@ pub fn main() {
                             pmd_ports,
                             s,
                             run_configuration_cloned.clone(),
-                            Box::new(get_delayed_tcp_proxy_nfg(None)).clone(),
+                            &get_delayed_tcp_proxy_nfg(None).clone(),
                         );
                     },
                 ))
@@ -279,7 +279,7 @@ pub fn main() {
                             pmd_ports,
                             s,
                             run_configuration_cloned.clone(),
-                            Box::new(get_simple_tcp_proxy_nfg(None)).clone(),
+                            &get_simple_tcp_proxy_nfg(None).clone(),
                         );
                     },
                 ))

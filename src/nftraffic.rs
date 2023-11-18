@@ -243,10 +243,10 @@ pub fn setup_generator<FPL>(
     let receive_pci = ReceiveBatch::new(pci.clone());
     let l2_input_stream = merge_auto(
         vec![
-            box syn_consumer,
-            box payload_consumer,
-            box consumer_timerticks.set_urgent(),
-            box receive_pci,
+            Box::new(syn_consumer),
+            Box::new(payload_consumer),
+            Box::new(consumer_timerticks.set_urgent()),
+            Box::new(receive_pci),
         ],
         SchedulingPolicy::LongestQueue,
     );
@@ -282,7 +282,7 @@ pub fn setup_generator<FPL>(
         TimeAdder::new("cmanager_s", sample_size),
     ];
 
-    let group_by_closure = box move |pdu: &mut Pdu| {
+    let group_by_closure = Box::new(move |pdu: &mut Pdu| {
         // this is the major closure for TCP processing
 
         let now = || unsafe { _rdtsc() }.separated_string();
@@ -1124,7 +1124,7 @@ pub fn setup_generator<FPL>(
             time_adders[6].add_diff(unsafe { _rdtsc() } - timestamp_entry);
         }
         group_index
-    };
+    });
 
     // process TCP traffic addressed to us
     let mut l4groups = l2_input_stream.group_by(3, group_by_closure, sched, "L4-Groups".to_string(), uuid_l4groupby_clone);
@@ -1132,7 +1132,11 @@ pub fn setup_generator<FPL>(
     let pipe2kni = l4groups.get_group(2).unwrap().send(kni.clone());
     let l4pciflow = l4groups.get_group(1).unwrap();
     let l4dumpflow = l4groups.get_group(0).unwrap().drop();
-    let pipe2pci = merge_auto(vec![box l4pciflow, box l4dumpflow], SchedulingPolicy::LongestQueue).send(pci.clone());
+    let pipe2pci = merge_auto(
+        vec![Box::new(l4pciflow), Box::new(l4dumpflow)],
+        SchedulingPolicy::LongestQueue,
+    )
+    .send(pci.clone());
 
     let uuid_pipe2kni = install_task(sched, "Pipe2Kni", pipe2kni);
     tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::Pipe2Kni))

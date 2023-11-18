@@ -1,4 +1,3 @@
-#![feature(box_syntax)]
 extern crate ctrlc;
 extern crate e2d2;
 extern crate env_logger;
@@ -29,11 +28,11 @@ use uuid::Uuid;
 use tcp_lib::netfcts::RunTime;
 
 pub fn nf_macswap<T: 'static + Batch>(parent: T) -> TransformBatch<T> {
-    parent.transform(box move |pkt| {
+    parent.transform(Box::new(move |pkt| {
         assert_eq!(pkt.refcnt(), 1);
         let hdr = pkt.headers_mut().mac_mut(0);
         hdr.swap_addresses();
-    })
+    }))
 }
 
 

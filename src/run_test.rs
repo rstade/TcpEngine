@@ -68,7 +68,7 @@ pub fn run_test(test_type: TestType) {
                     pmd_ports,
                     s,
                     run_configuration_cloned.clone(),
-                    Box::new(get_tcp_generator_nfg()).clone(),
+                    &get_tcp_generator_nfg().clone(),
                 );
             },
         ))

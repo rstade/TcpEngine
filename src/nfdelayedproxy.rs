@@ -182,7 +182,7 @@ pub fn setup_delayed_proxy<F1, F2>(
 
     let receive_pci = ReceiveBatch::new(pci.clone());
     let l2_input_stream = merge_auto(
-        vec![box consumer_timerticks.set_urgent(), box receive_pci],
+        vec![Box::new(consumer_timerticks.set_urgent()), Box::new(receive_pci)],
         SchedulingPolicy::LongestQueue,
     );
 
@@ -221,7 +221,7 @@ pub fn setup_delayed_proxy<F1, F2>(
 
     let delayed_binding_closure =
         // this is the main closure containing the proxy service logic
-        box move |pdu: &mut Pdu| {
+        Box::new( move |pdu: &mut Pdu| {
             // this is the major closure for TCP processing
 
             #[inline]
@@ -373,12 +373,14 @@ pub fn setup_delayed_proxy<F1, F2>(
                 prepare_checksum_and_ttl(p);
             }
 
-            ///returns ACK for SYN to server, and sends payload packet to server
+            /// 1) sends ACK to server,
+            /// 2) sends payload packet to server,
+            /// 3) returns the size of the payload packet sent to the server
             fn server_synack_received(
                 p: &mut Pdu,
                 c: &mut ProxyConnection,
-                producer: &mut MpscProducer,
-            ) {
+                producer: &mut MpscProducer
+            ) -> usize {
                 trace!("syn_ack_recv: p.refcnt= {}", p.refcnt());
                 // correction for server side seq numbers
                 let delta = c.c_seqn.wrapping_sub(p.headers().tcp(2).seq_num());
@@ -398,6 +400,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                 trace!("last ACK of three way handshake towards server: L4: {}", p_clone.headers().tcp(2));
                 producer.enqueue_one(p_clone);
 
+                let mut result = 0usize;
                 if c.payload_packet.is_some() {
                     let mut payload_packet = c.payload_packet.take().unwrap();
                     payload_packet.replace_header(2, &Header::Tcp(p.headers_mut().tcp_mut(2)));  // same tcp header as in Ack packet
@@ -416,8 +419,10 @@ pub fn setup_delayed_proxy<F1, F2>(
                     c.ackn_p2s = p.headers().tcp(2).ack_num();
                     trace!("delayed packet: { }", payload_packet.headers());
                     assert_eq!(payload_packet.refcnt(), 1);
+                    result=tcp_payload_size(payload_packet.as_ref());
                     producer.enqueue_one_boxed(payload_packet);
                 }
+                result
             }
 
 // *****  the closure starts here with processing
@@ -664,12 +669,12 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 && old_s_state == TcpState::Listen {
                                 // should be the first payload packet from client
                                 let syn = packet_allocator.get_pdu().unwrap();
+                                counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
                                 select_server(pdu, &mut c, &me, &servers, &f_select_server, syn);
                                 //trace!("after  select_server: p.refcnt = {}, packet_in.refcnt() = {}", pdu.refcnt(), pdu_in.refcnt());
                                 debug!("{} SYN packet to server - L3: {}, L4: {}", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
                                 c.s_init();
                                 c.s_push_state(TcpState::SynReceived);
-                                counter_c[TcpStatistics::RecvPayload] += 1;
                                 counter_s[TcpStatistics::SentSyn] += 1;
                                 group_index = 1;
                                 #[cfg(feature = "profiling")]
@@ -696,6 +701,8 @@ pub fn setup_delayed_proxy<F1, F2>(
                             // once we established a two-way e2e-connection, we always forward the packets
                             if old_s_state >= TcpState::Established && old_s_state < TcpState::Closed
                                 && old_c_state >= TcpState::Established {
+                                counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
+                                counter_s[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                 client_to_server(pdu, &mut c, &me, &servers, &f_process_payload_c_s);
                                 group_index = 1;
                                 #[cfg(feature = "profiling")]
@@ -721,9 +728,9 @@ pub fn setup_delayed_proxy<F1, F2>(
                                     if old_s_state == TcpState::SynReceived {
                                         c.s_push_state(TcpState::Established);
                                         debug!("{} established two-way client server connection, SYN-ACK received: L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
-                                        server_synack_received(pdu, &mut c, &mut producer);
+                                        let payload_size=server_synack_received(pdu, &mut c, &mut producer);
+                                        counter_s[TcpStatistics::SentPayload] += payload_size;
                                         counter_s[TcpStatistics::SentSynAck2] += 1;
-                                        counter_s[TcpStatistics::SentPayload] += 1;
                                         group_index = 0; // delayed payload packets are sent via extra queue
                                     } else {
                                         warn!("{} received SYN-ACK in wrong state: {:?}", thread_id, old_s_state);
@@ -802,8 +809,10 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 if old_s_state >= TcpState::Established
                                     && old_c_state >= TcpState::Established
                                     && old_c_state < TcpState::Closed {
+                                    counter_s[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
                                     // translate packets and forward to client
                                     server_to_client(pdu, &mut c, &me);
+                                    counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                     group_index = 1;
                                     b_unexpected = false;
                                     #[cfg(feature = "profiling")]
@@ -837,7 +846,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                 cm.release_port(sport, &mut wheel);
             }
             group_index
-        };
+        });
 
     let mut l4groups = l2_input_stream.group_by(
         3,
@@ -850,7 +859,7 @@ pub fn setup_delayed_proxy<F1, F2>(
     let pipe2kni = l4groups.get_group(2).unwrap().send(kni.clone());
     let l4pciflow = l4groups.get_group(1).unwrap();
     let l4dumpflow = l4groups.get_group(0).unwrap().drop();
-    let pipe2pci = merge_auto(vec![box l4pciflow, box l4dumpflow], SchedulingPolicy::LongestQueue).send(pci.clone());
+    let pipe2pci = merge_auto(vec![Box::new(l4pciflow), Box::new(l4dumpflow)], SchedulingPolicy::LongestQueue).send(pci.clone());
 
     let uuid_pipe2kni = tasks::install_task(sched, "Pipe2Kni", pipe2kni);
     tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::Pipe2Kni))
