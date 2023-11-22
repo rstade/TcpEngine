@@ -102,11 +102,34 @@ First a network interface for user-space DPDK is needed. This interface is used 
 
 Secondly an extra Linux interface is required which is used by the test modules for placing server stacks.
 
-For some integration tests both interfaces must be interconnected. In case of physical interfaces, interfaces may be connected by a cross-over cable. In case of virtual interfaces, e.g. interfaces may be connected to a host-only network of the hypervisor. Using Wireshark on the linux interface allows us to observe the traffic exchange between clients, the TcpEngine and the servers. However, as wireshark may not keep up with the transmission speeds of modern line cards, packets may be lost.
+For some integration tests both interfaces must be interconnected. In case of physical interfaces, interfaces may be 
+either connected by a cross-over cable or by a switch. In case of virtual interfaces, e.g. interfaces may be connected 
+to a host-only network of the hypervisor. Using Wireshark on the linux interface allows us to observe the traffic exchange between clients, the TcpEngine and the servers. However, as wireshark may not keep up with the transmission speeds of modern line cards, packets may be lost.
 
 In addition, some parameters like the Linux interface name (linux_if) and the IP / MAC addresses in the test module configuration files  tests/*.toml need to be adapted.
 
+For performing the tests, follow these steps:
+
+* prepare the environment:  
+   - set up hugepages, e.g. using ./hugepages.sh
+   - set up DPDK drivers, e.g. using ./prepNet.sh
+   - check the network environment, especially IP addresses and IP routing, see for an example: network.test.cfg. 
+     Note that often a misconfigured network environment results in failing tests
+* use ./test.sh with one of the parameters:
+  * test_rf_ip: receive flow steering based on IP address for DelayedProxy or SimpleProxy, config file is
+    ./tests/test_rfs_ip.toml
+  * test_rfs_port: receive flow steering based on port for DelayedProxy or SimpleProxy, config file is ./tests/test_rfs_port.toml
+  * client_syn_fin: special test for receiving pre-mature FIN for DelayedProxy or SimpleProxy
+  * test_as_client: test for mode=TrafficGenerator when TcpEngine is the client side of the TCP transactions and 
+    server side is a TCP Linux stack
+  * test_as_server: test for mode=TrafficGenerator when TcpEngine is the server side ot the TCP transactions and 
+    client side is a TCP Linux stack
+
+
+
 Below test results are achieved on a 2-socket NUMA server, each socket hosting 4 physical cores, running the real-time kernel of Centos 7.5.
+
+
 
 
 
