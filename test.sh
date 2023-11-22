@@ -11,6 +11,7 @@ else
 fi
 
 case $TASK in
+    # the following first targets are testing the TcpEngine as mode=DelayedProxyEngine or SimpleProxyEngine
     test_rfs_ip)
         export RUST_LOG="tcp_lib=info,test_tcp_proxy=debug,e2d2=info"
         export RUST_BACKTRACE=1
@@ -66,6 +67,7 @@ case $TASK in
         echo ./tests/client_syn_fin.2.toml > tests/toml_file.txt
         sudo -E env "PATH=$PATH" $executable --nocapture
         ;;
+    ## the following targets are testing the TcpEngine as mode=TrafficEngine
     test_as_client)
         export RUST_LOG="tcp_lib=debug,e2d2=debug", RUST_BACKTRACE=1
         executable=`cargo test $2 $3 $4 --no-run --message-format=json --test test_as_client | jq -r 'select((.profile.test == true) and (.target.name == "test_as_client")) | .filenames[]'`

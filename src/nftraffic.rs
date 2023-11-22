@@ -661,7 +661,7 @@ pub fn setup_generator<FPL>(
                     */
                     if !b_fin {
                         c.inc_sent_payload_pkts();
-                        counter_c[TcpStatistics::SentPayload] += 1;
+                        counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                         c.seqn_nxt = c.seqn_nxt.wrapping_add(tcp_payload_size(pdu) as u32);
                         if pdu.data_len() < MIN_FRAME_SIZE {
                             let n_padding_bytes = MIN_FRAME_SIZE - pdu.data_len();
@@ -813,7 +813,7 @@ pub fn setup_generator<FPL>(
                             let payload_sz = tcp_payload_size(pdu);
                             let b_payload = old_s_state >= TcpState::Established && payload_sz > 0;
                             if b_payload {
-                                counter_s[TcpStatistics::RecvPayload] += 1;
+                                counter_s[TcpStatistics::RecvPayload] += payload_sz;
                                 c.inc_recv_payload_pkts();
                                 //trace!("server: got payload, count= {}", c.recv_payload_pkts());
                                 if c.recv_payload_pkts() == 1 && detailed_records {
@@ -914,7 +914,7 @@ pub fn setup_generator<FPL>(
                                 }
                                 // sets also c.ackn_nxt
                                 s_reply_with_payload(pdu, &mut c, b_fin);
-                                counter_s[TcpStatistics::SentPayload] += 1;
+                                counter_s[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                 c.inc_sent_payload_pkts();
                                 group_index = 1;
                             }
@@ -978,7 +978,7 @@ pub fn setup_generator<FPL>(
                             let payload_sz = tcp_payload_size(pdu);
                             let b_payload = old_c_state >= TcpState::Established && payload_sz > 0;
                             if b_payload {
-                                counter_c[TcpStatistics::RecvPayload] += 1;
+                                counter_c[TcpStatistics::RecvPayload] += payload_sz;
                                 c.inc_recv_payload_pkts();
                                 //trace!("client: got payload, count= {}", c.sent_payload_pkts());
                                 c.ackn_nxt = pdu.headers().tcp(2).seq_num().wrapping_add(payload_sz as u32);
@@ -1071,7 +1071,7 @@ pub fn setup_generator<FPL>(
                                     }
                                     TcpState::Established if b_payload => {
                                         if !c_recv_payload(pdu, c) {
-                                            counter_c[TcpStatistics::SentPayload] += 1;
+                                            counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                         } else {
                                             counter_c[TcpStatistics::SentFin] += 1;
                                         }
@@ -1081,7 +1081,7 @@ pub fn setup_generator<FPL>(
                                 }
                             } else if b_payload && old_c_state == TcpState::Established {
                                 if !c_recv_payload(pdu, c) {
-                                    counter_c[TcpStatistics::SentPayload] += 1;
+                                    counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                 } else {
                                     counter_c[TcpStatistics::SentFin] += 1;
                                 }
