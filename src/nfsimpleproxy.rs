@@ -12,25 +12,26 @@ use std::arch::x86_64::_rdtsc;
 
 use uuid::Uuid;
 
-use proxymanager::{ProxyConnection, ConnectionManager };
-use netfcts::timer_wheel::TimerWheel;
-use netfcts::tcp_common::*;
-use netfcts::tasks;
-use netfcts::tasks::private_etype;
-use netfcts::{prepare_checksum_and_ttl, RunConfiguration};
-use netfcts::set_header;
-use netfcts::recstore::{Extension, ProxyRecStore, Store64};
-use netfcts::comm::PipelineId;
+use crate::proxymanager::{ProxyConnection, ConnectionManager };
+use crate::netfcts::timer_wheel::TimerWheel;
+use crate::netfcts::tcp_common::*;
+use crate::netfcts::tasks;
+use crate::netfcts::tasks::private_etype;
+use crate::netfcts::{prepare_checksum_and_ttl, RunConfiguration};
+use crate::netfcts::set_header;
+use crate::netfcts::recstore::{Extension, ProxyRecStore, Store64};
+use crate::netfcts::comm::PipelineId;
 
 #[cfg(feature = "profiling")]
 use netfcts::utils::TimeAdder;
 
-use ::{Configuration, FnProxySelectServer};
-use netfcts::comm::{ MessageFrom, MessageTo };
-use netfcts::tasks::TaskType;
+use crate::Configuration;
+use crate::FnProxySelectServer;
+use crate::netfcts::comm::{ MessageFrom, MessageTo };
+use crate::netfcts::tasks::TaskType;
 
-use ::{Timeouts, FnProxyPayload};
-use get_server_addresses;
+use {crate::Timeouts, crate::FnProxyPayload};
+use crate::get_server_addresses;
 
 const TIMER_WHEEL_RESOLUTION_MS: u64 = 10;
 const TIMER_WHEEL_SLOTS: usize = 1002;
@@ -353,7 +354,8 @@ pub fn setup_simple_proxy<F1, F2>(
                     // check for timeouts
                     // debug!("ticks = {}", ticks);
                     if ticks % wheel_tick_reduction_factor == 0 {
-                        cm.release_timeouts(unsafe { &_rdtsc() }, &mut wheel);
+                        let current_tsc = unsafe { _rdtsc() };
+                        cm.release_timeouts(&current_tsc, &mut wheel);
                     }
                     #[cfg(feature = "profiling")]
                     {   //save stats

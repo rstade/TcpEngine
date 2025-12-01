@@ -1,3 +1,5 @@
+use crate::{get_server_addresses, FnProxyPayload};
+use crate::FnProxySelectServer;
 use e2d2::operators::{ReceiveBatch, Batch, merge_auto, SchedulingPolicy};
 use e2d2::scheduler::{Runnable, Scheduler, StandaloneScheduler};
 use e2d2::allocators::CacheAligned;
@@ -13,27 +15,26 @@ use std::arch::x86_64::_rdtsc;
 
 use uuid::Uuid;
 
-use proxymanager::{ProxyConnection, ConnectionManager };
-use netfcts::timer_wheel::TimerWheel;
-use netfcts::tcp_common::*;
-use netfcts::tasks;
-use netfcts::tasks::private_etype;
-use netfcts::{prepare_checksum_and_ttl, RunConfiguration};
-use netfcts::set_header;
-use netfcts::remove_tcp_options;
-use netfcts::make_reply_packet;
-use netfcts::recstore::{Extension, ProxyRecStore, Store64};
-use netfcts::comm::PipelineId;
+use crate::proxymanager::{ProxyConnection, ConnectionManager };
+use crate::netfcts::timer_wheel::TimerWheel;
+use crate::netfcts::tcp_common::*;
+use crate::netfcts::tasks;
+use crate::netfcts::tasks::private_etype;
+use crate::netfcts::{prepare_checksum_and_ttl, RunConfiguration};
+use crate::netfcts::set_header;
+use crate::netfcts::remove_tcp_options;
+use crate::netfcts::make_reply_packet;
+use crate::netfcts::recstore::{Extension, ProxyRecStore, Store64};
+use crate::netfcts::comm::PipelineId;
 
 #[cfg(feature = "profiling")]
 use netfcts::utils::TimeAdder;
 
-use ::{Configuration, FnProxySelectServer};
-use netfcts::comm::{ MessageFrom, MessageTo };
-use netfcts::tasks::TaskType;
+use crate::Configuration;
+use crate::netfcts::comm::{ MessageFrom, MessageTo };
+use crate::netfcts::tasks::TaskType;
 
-use ::{Timeouts, FnProxyPayload};
-use get_server_addresses;
+use crate::Timeouts;
 
 const MIN_FRAME_SIZE: usize = 60; // without fcs
 
@@ -125,18 +126,18 @@ pub fn setup_delayed_proxy<F1, F2>(
     let name = String::from("Kni2Pci");
     sched.add_runnable(Runnable::from_task(uuid, name, forward2pci).move_ready());
 
-    struct PduAllocator<'a> {
-        pdu_batch: Option<Vec<Pdu<'a>>>,
+    struct PduAllocator {
+        pdu_batch: Option<Vec<Pdu>>,
     }
 
-    impl<'a> PduAllocator<'a> {
-        fn new() -> PduAllocator<'a> {
+    impl PduAllocator {
+        fn new() -> PduAllocator {
             PduAllocator {
                 pdu_batch: Pdu::new_pdu_array(),
             }
         }
 
-        fn get_pdu(&mut self) -> Option<Pdu<'a>> {
+        fn get_pdu(&mut self) -> Option<Pdu> {
             if self.pdu_batch.is_some() {
                 if self.pdu_batch.as_ref().unwrap().is_empty() {
                     self.pdu_batch = Pdu::new_pdu_array();
@@ -323,14 +324,14 @@ pub fn setup_delayed_proxy<F1, F2>(
                 me: &Me,
                 servers: &Vec<L234Data>,
                 f_select_server: &F,
-                mut syn: Pdu<'static>,
+                mut syn: Pdu,
             ) where
                 F: Fn(&mut ProxyConnection, &Vec<L234Data>),
             {
                 let ip;
                 let tcp;
                 let payload_sz;
-                {
+                unsafe {
                     // save clone of payload packet to connection state
                     let p_clone = Box::new(p.clone()); // creates reference to the mbuf in p
                     payload_sz = tcp_payload_size(&p_clone);
@@ -344,7 +345,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                     assert!(ok);
                     // this is a little bit tricky: we replace the borrowed packet of the closure, with the syn packet
                     // note, this just replaces pointers, e.g. the pointer to the orignal mbuf is replaced with the pointer to the new mbuf in the syn packet
-                    let mut old_p = unsafe { p.replace(syn) };
+                    let mut old_p = p.replace(syn);
                     old_p.dereference_mbuf(); // as packet_in no longer references the original mbuf
                 debug!("old_p.refcnt= {}, old_p= {}", old_p.refcnt(), old_p);
                     ip = old_p.headers().ip(1).clone();
@@ -395,7 +396,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                 //debug!("data_len= { }, p= { }",p.data_len(), p);
                 prepare_checksum_and_ttl(p);
                 // we clone the packet and send it via the extra queue, the original p gets discarded
-                let p_clone = p.clone();
+                let p_clone = unsafe { p.clone() };
                 trace!("syn_ack_recv: p_clone/p.refcnt= {}/{}", p_clone.refcnt(), p.refcnt());
                 trace!("last ACK of three way handshake towards server: L4: {}", p_clone.headers().tcp(2));
                 producer.enqueue_one(p_clone);
@@ -512,7 +513,8 @@ pub fn setup_delayed_proxy<F1, F2>(
                     // check for timeouts
                     // debug!("ticks = {}", ticks);
                     if ticks % wheel_tick_reduction_factor == 0 {
-                        cm.release_timeouts(unsafe { &_rdtsc() }, &mut wheel);
+                        let current_tsc = unsafe { _rdtsc() };
+                        cm.release_timeouts(&current_tsc, &mut wheel);
                     }
                     #[cfg(feature = "profiling")]
                     {   //save stats

@@ -4,9 +4,9 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use separator::Separatable;
 
-use netfcts::tcp_common::{TcpRole, TcpState, ReleaseCause};
-use netfcts::recstore::Storable;
-use netfcts::tcp_common::tcp_start_state;
+use crate::netfcts::tcp_common::{TcpRole, TcpState, ReleaseCause};
+use crate::netfcts::recstore::Storable;
+use crate::netfcts::tcp_common::tcp_start_state;
 
 #[derive(Clone, Copy, Debug)]
 //#[repr(align(64))]

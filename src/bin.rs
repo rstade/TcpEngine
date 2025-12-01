@@ -1,5 +1,3 @@
-#![feature(trait_alias)]
-
 extern crate ctrlc;
 extern crate e2d2;
 extern crate env_logger;
@@ -32,7 +30,7 @@ use tcp_lib::netfcts::conrecord::{ConRecord, HasTcpState, HasConData};
 use tcp_lib::netfcts::io::print_rx_tx_counters;
 use tcp_lib::netfcts::recstore::{Extension, Store64};
 
-use tcp_lib::{setup_pipelines, Connection, EngineMode, FnNetworkFunctionGraph, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg};
+use tcp_lib::{setup_pipelines, Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg};
 use tcp_lib::netfcts::tcp_common::ReleaseCause;
 use tcp_lib::netfcts::tcp_common::TcpState;
 

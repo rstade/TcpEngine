@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::mpsc::Sender;
-use netfcts::tasks::TaskType;
-use netfcts::tcp_common::TcpCounter;
+use crate::netfcts::tasks::TaskType;
+use crate::netfcts::tcp_common::TcpCounter;
 use uuid::Uuid;
 
 #[derive(Clone, PartialEq, Eq, Hash, Default, Debug)]

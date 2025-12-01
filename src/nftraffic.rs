@@ -14,28 +14,28 @@ use bincode::{deserialize};
 use separator::Separatable;
 
 
-use tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
-use {Configuration};
+use crate::tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
+use crate::{get_server_addresses, Configuration};
 
-use netfcts::tcp_common::{TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size};
+use crate::netfcts::tcp_common::{TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size};
 
 #[cfg(feature = "profiling")]
 use netfcts::utils::TimeAdder;
-use netfcts::comm::{MessageFrom, MessageTo};
-use netfcts::tasks::TaskType;
-use netfcts::utils::Timeouts;
-use netfcts::tasks::{PRIVATE_ETYPE_PACKET, PRIVATE_ETYPE_TIMER, ETYPE_IPV4};
-use netfcts::tasks::{private_etype, PacketInjector, TickGenerator, install_task};
-use netfcts::timer_wheel::TimerWheel;
-use netfcts::{prepare_checksum_and_ttl, RunConfiguration};
-use netfcts::set_header;
-use netfcts::remove_tcp_options;
-use netfcts::{make_reply_packet, strip_payload};
+use crate::netfcts::comm::{MessageFrom, MessageTo};
+use crate::netfcts::tasks::TaskType;
+use crate::netfcts::utils::Timeouts;
+use crate::netfcts::tasks::{PRIVATE_ETYPE_PACKET, PRIVATE_ETYPE_TIMER, ETYPE_IPV4};
+use crate::netfcts::tasks::{private_etype, PacketInjector, TickGenerator, install_task};
+use crate::netfcts::timer_wheel::TimerWheel;
+use crate::netfcts::{prepare_checksum_and_ttl, RunConfiguration};
+use crate::netfcts::set_header;
+use crate::netfcts::remove_tcp_options;
+use crate::netfcts::{make_reply_packet, strip_payload};
 
-use {FnPayload, get_server_addresses};
+use crate::FnPayload;
 use std::convert::TryFrom;
-use netfcts::comm::PipelineId;
-use netfcts::recstore::{Extension, Store64};
+use crate::netfcts::comm::PipelineId;
+use crate::netfcts::recstore::{Extension, Store64};
 
 
 const MIN_FRAME_SIZE: usize = 60;
@@ -120,7 +120,7 @@ pub fn setup_generator<FPL>(
     }
 
 
-    // setting up a a reverse message channel between this pipeline and the main program thread
+    // setting up a reverse message channel between this pipeline and the main program thread
     debug!("{} setting up reverse channel", pipeline_id);
     let (remote_tx, rx) = channel::<MessageTo<Store64<Extension>>>();
     // we send the transmitter to the remote receiver of our messages, i.e. the RunTime
@@ -458,7 +458,7 @@ pub fn setup_generator<FPL>(
             {
                 let tcp = p.headers_mut().tcp_mut(2);
                 if tcp.ack_flag() && tcp.ack_num() == c.seqn_nxt {
-                    // we got a FIN+ACK as a receipt to a sent FIN (engine closed connection)
+                    // we got a FIN+ACK as a receipt to a send FIN (engine closed connection)
                     /*
                     debug!(
                         "active close: received FIN+ACK-reply from DUT {:?}:{:?}",
@@ -746,8 +746,9 @@ pub fn setup_generator<FPL>(
                 }
                 // check for timeouts
                 if ticks % wheel_tick_reduction_factor == 0 {
-                    cm_c.release_timeouts(unsafe { &_rdtsc() }, &mut wheel_c);
-                    cm_s.release_timeouts(unsafe { &_rdtsc() }, &mut wheel_s);
+                    let current_tsc = unsafe { _rdtsc() };
+                    cm_c.release_timeouts(&current_tsc, &mut wheel_c);
+                    cm_s.release_timeouts(&current_tsc, &mut wheel_s);
                 }
                 #[cfg(feature = "profiling")]
                 {

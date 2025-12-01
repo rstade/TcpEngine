@@ -10,13 +10,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use e2d2::interface::{PortQueue, L4Flow};
-use netfcts::timer_wheel::TimerWheel;
+use crate::netfcts::timer_wheel::TimerWheel;
 
-use netfcts::tcp_common::*;
-use netfcts::conrecord::HasTcpState;
-use netfcts::utils::shuffle_ports;
-use netfcts::recstore::{ConRecordOperations, Extension, SimpleStore, Store64};
-use netfcts::comm::PipelineId;
+use crate::netfcts::tcp_common::*;
+use crate::netfcts::conrecord::HasTcpState;
+use crate::netfcts::utils::shuffle_ports;
+use crate::netfcts::recstore::{ConRecordOperations, Extension, SimpleStore, Store64};
+use crate::netfcts::comm::PipelineId;
 
 //#[repr(align(64))]
 #[derive(Debug)]
@@ -587,7 +587,7 @@ impl ConnectionManagerC {
     }
 }
 
-use netfcts::utils::Sock2Index;
+use crate::netfcts::utils::Sock2Index;
 use std::cmp;
 
 pub struct ConnectionManagerS {

@@ -1,4 +1,4 @@
-#![feature(trait_alias)]
+// Note: avoid nightly-only `trait_alias` feature by using normal traits with blanket impls
 
 // Logging
 #[macro_use]
@@ -58,24 +58,78 @@ use nfdelayedproxy::setup_delayed_proxy;
 use nfsimpleproxy::setup_simple_proxy;
 use nftraffic::setup_generator;
 
-pub trait FnPayload =
-    Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize + Sized + Send + Sync + Clone + 'static;
+// Replacement for former `trait alias` of a function-like constraint
+pub trait FnPayload: Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize
+    + Send
+    + Sync
+    + Clone
+    + 'static
+{
+}
 
-pub trait FnNetworkFunctionGraph = Fn(
+impl<T> FnPayload for T where
+    T: Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize
+        + Send
+        + Sync
+        + Clone
+        + 'static
+{
+}
+
+pub trait FnNetworkFunctionGraph: Fn(
         i32,
         Option<PciQueueType>,
         Option<KniQueueType>,
         &mut StandaloneScheduler,
         RunConfiguration<Configuration, Store64<Extension>>,
     ) -> ()
-    + Sized
     + Send
     + Sync
     + Clone
-    + 'static;
+    + 'static
+{
+}
 
-pub trait FnProxySelectServer = Fn(&mut ProxyConnection, &Vec<L234Data>) + Sized + Send + Sync + Clone + 'static;
-pub trait FnProxyPayload = Fn(&mut ProxyConnection, &mut [u8], usize) + Sized + Send + Sync + Clone + 'static;
+impl<T> FnNetworkFunctionGraph for T where
+    T: Fn(
+            i32,
+            Option<PciQueueType>,
+            Option<KniQueueType>,
+            &mut StandaloneScheduler,
+            RunConfiguration<Configuration, Store64<Extension>>,
+        ) -> ()
+        + Send
+        + Sync
+        + Clone
+        + 'static
+{
+}
+
+pub trait FnProxySelectServer: Fn(&mut ProxyConnection, &Vec<L234Data>)
+    + Send
+    + Sync
+    + Clone
+    + 'static
+{
+}
+
+impl<T> FnProxySelectServer for T where
+    T: Fn(&mut ProxyConnection, &Vec<L234Data>) + Send + Sync + Clone + 'static
+{
+}
+
+pub trait FnProxyPayload: Fn(&mut ProxyConnection, &mut [u8], usize)
+    + Send
+    + Sync
+    + Clone
+    + 'static
+{
+}
+
+impl<T> FnProxyPayload for T where
+    T: Fn(&mut ProxyConnection, &mut [u8], usize) + Send + Sync + Clone + 'static
+{
+}
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 pub enum EngineMode {
@@ -202,17 +256,8 @@ pub fn get_server_addresses(configuration: &Configuration) -> Vec<L234Data> {
         .collect()
 }
 
-
-pub trait NFGfn = Fn(
-        i32,
-        Option<PciQueueType>,
-        Option<KniQueueType>,
-        &mut StandaloneScheduler,
-        RunConfiguration<Configuration, Store64<Extension>>,
-    ) + Clone;
-
 /// return the closure which creates the network function graph for the tcp generator (server and client)
-pub fn get_tcp_generator_nfg() -> impl NFGfn {
+pub fn get_tcp_generator_nfg() -> impl FnNetworkFunctionGraph {
     // set_payload sets up the tcp payload packet in the tcp client
     fn set_payload(p: &mut Pdu, c: &mut Connection, cdata: Option<CData>, b_fin: &mut bool, fin_by_client: &usize) -> usize {
         let pp = c.sent_payload_pkts();
@@ -308,7 +353,7 @@ fn process_payload_c_s(_c: &mut ProxyConnection, _payload: &mut [u8], _tailroom:
 }
 
 /// return the closure which creates the network function graph for the delayed tcp proxy
-pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl NFGfn {
+pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl FnNetworkFunctionGraph {
     let select_target = select_target.unwrap_or(select_target_by_payload);
 
     move |core: i32,
@@ -331,7 +376,7 @@ pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl 
 }
 
 /// return the closure which creates the network function graph for the tcp proxy w/o delayed binding
-pub fn get_simple_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl NFGfn {
+pub fn get_simple_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl FnNetworkFunctionGraph {
     let select_target = select_target.unwrap_or(select_target_randomly);
 
     move |core: i32,

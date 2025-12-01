@@ -56,7 +56,7 @@ where
         (self.no_slots as u64 - 1) * self.resolution_cycles as u64
     }
 
-    pub fn tick(&mut self, now: &u64) -> (Option<Drain<T>>, bool) {
+    pub fn tick(&mut self, now: &u64) -> (Option<Drain<'_, T>>, bool) {
         if self.start != 0 {
             // only when the wheel has been started
             let dur = *now - self.start;

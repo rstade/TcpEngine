@@ -8,7 +8,7 @@ use e2d2::queues::MpscProducer;
 use e2d2::scheduler::{Executable, Runnable, Scheduler, StandaloneScheduler};
 use std::sync::Arc;
 use uuid::Uuid;
-use netfcts::tcp_common::L234Data;
+use crate::netfcts::tcp_common::L234Data;
 //use separator::Separatable;
 
 #[derive(Debug)]
@@ -48,8 +48,8 @@ impl Executable for KniHandleRequest {
     }
 }
 
-pub struct PacketInjector<'a> {
-    packet_prototype: Pdu<'a>,
+pub struct PacketInjector {
+    packet_prototype: Pdu,
     producer: MpscProducer,
     no_packets: usize,
     sent_packets: usize,
@@ -75,7 +75,7 @@ pub fn private_etype(etype: &u16) -> bool {
     return *etype == PRIVATE_ETYPE_PACKET || *etype == PRIVATE_ETYPE_TIMER;
 }
 
-impl<'a> PacketInjector<'a> {
+impl<'a> PacketInjector {
     // by setting no_packets=0 batch creation is unlimited
     pub fn new(
         producer: MpscProducer,
@@ -83,7 +83,7 @@ impl<'a> PacketInjector<'a> {
         no_packets: usize,
         min_inter_batch_gap: u64,
         dst_port: u16,
-    ) -> PacketInjector<'a> {
+    ) -> PacketInjector {
         let mut mac = MacHeader::new();
         mac.src = hd_src_data.mac.clone();
         mac.set_etype(PRIVATE_ETYPE_PACKET); // mark this through an unused ethertype as an internal frame, will be re-written later in the pipeline
@@ -117,7 +117,7 @@ impl<'a> PacketInjector<'a> {
         }
     }
 
-    pub fn set_start_delay(mut self, delay: u64) -> PacketInjector<'a> {
+    pub fn set_start_delay(mut self, delay: u64) -> PacketInjector {
         self.start_delay = delay;
         self
     }
@@ -129,7 +129,7 @@ impl<'a> PacketInjector<'a> {
     }
 }
 
-impl<'a> Executable for PacketInjector<'a> {
+impl<'a> Executable for PacketInjector {
     fn execute(&mut self) -> (u32, i32) {
         let now = unsafe { _rdtsc() };
         if self.start_time == 0 {
@@ -158,8 +158,8 @@ impl<'a> Executable for PacketInjector<'a> {
     }
 }
 
-pub struct TickGenerator<'a> {
-    packet_prototype: Pdu<'a>,
+pub struct TickGenerator {
+    packet_prototype: Pdu,
     producer: MpscProducer,
     last_tick: u64,
     tick_length: u64,
@@ -168,12 +168,12 @@ pub struct TickGenerator<'a> {
 }
 
 #[allow(dead_code)]
-impl<'a> TickGenerator<'a> {
+impl<'a> TickGenerator {
     pub fn new(
         producer: MpscProducer,
         hd_src_data: &L234Data,
         tick_length: u64, // in cycles
-    ) -> TickGenerator<'a> {
+    ) -> TickGenerator {
         let mut mac = MacHeader::new();
         mac.src = hd_src_data.mac.clone();
         mac.set_etype(PRIVATE_ETYPE_TIMER); // mark this through an unused ethertype as an internal frame, will be re-written later in the pipeline
@@ -214,7 +214,7 @@ impl<'a> TickGenerator<'a> {
     }
 }
 
-impl<'a> Executable for TickGenerator<'a> {
+impl<'a> Executable for TickGenerator {
     fn execute(&mut self) -> (u32, i32) {
         let p;
         let now = unsafe { _rdtsc() };
@@ -222,7 +222,7 @@ impl<'a> Executable for TickGenerator<'a> {
             unsafe {
                 p = self.packet_prototype.copy();
             }
-            self.producer.enqueue_one(p);
+            self.producer.enqueue_one(p.unwrap());
             self.last_tick = now;
             self.tick_count += 1;
             (1, 0)

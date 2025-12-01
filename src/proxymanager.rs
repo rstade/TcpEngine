@@ -10,16 +10,16 @@ use std::rc::Rc;
 use e2d2::interface::{PortQueue, L4Flow, Pdu};
 
 //use uuid::Uuid;
-use netfcts::timer_wheel::TimerWheel;
-use netfcts::tcp_common::*;
-use netfcts::recstore::{SimpleStore, Store64};
-use netfcts::conrecord::HasTcpState;
-use netfcts::utils::shuffle_ports;
+use crate::netfcts::timer_wheel::TimerWheel;
+use crate::netfcts::tcp_common::*;
+use crate::netfcts::recstore::{SimpleStore, Store64};
+use crate::netfcts::conrecord::HasTcpState;
+use crate::netfcts::utils::shuffle_ports;
 #[cfg(feature = "profiling")]
 use netfcts::utils::TimeAdder;
 
 use eui48::MacAddress;
-use netfcts::recstore::ProxyRecStore;
+use crate::netfcts::recstore::ProxyRecStore;
 
 pub union Seqn {
     /// seqn_nxt for connection from client to server, only used during connection setup
@@ -28,8 +28,8 @@ pub union Seqn {
     pub ack_for_fin_p2c: u32,
 }
 
-pub struct ProxyConnection<'a> {
-    pub payload_packet: Option<Box<Pdu<'a>>>,
+pub struct ProxyConnection {
+    pub payload_packet: Option<Box<Pdu>>,
     //pub payload: Box<Vec<u8>>,
     detailed_c: Option<Box<DetailedConnection>>,
     pub client_mac: MacAddress,
@@ -58,8 +58,8 @@ pub struct ProxyConnection<'a> {
     server_index: u8,
 }
 
-impl<'a> ProxyConnection<'a> {
-    fn new() -> ProxyConnection<'a> {
+impl<'a> ProxyConnection {
+    fn new() -> ProxyConnection {
         ProxyConnection {
             payload_packet: None,
             //payload: Box::new(Vec::with_capacity(1500)),
@@ -318,7 +318,7 @@ impl DetailedConnection {
     }
 }
 
-impl<'a> Clone for ProxyConnection<'a> {
+impl Clone for ProxyConnection {
     fn clone(&self) -> Self {
         ProxyConnection::new()
     }
@@ -331,7 +331,7 @@ pub trait Connection {
 
 pub static GLOBAL_MANAGER_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-pub struct ConnectionManager<'a> {
+pub struct ConnectionManager {
     record_store: Rc<RefCell<ProxyRecStore>>,
     //    sock2port: Sock2Index,
     sock2port: BTreeMap<(u32, u16), u16>,
@@ -339,7 +339,7 @@ pub struct ConnectionManager<'a> {
     time_adder: TimeAdder,
     //sock2port: HashMap<(u32, u16), u16>,
     free_ports: VecDeque<u16>,
-    port2con: Vec<ProxyConnection<'a>>,
+    port2con: Vec<ProxyConnection>,
     pci: PortQueue,
     // the PortQueue for which connections are managed
     tcp_port_base: u16,
@@ -350,8 +350,8 @@ pub struct ConnectionManager<'a> {
 
 const MAX_RECORDS: usize = 0x3FFFF as usize;
 
-impl<'a> ConnectionManager<'a> {
-    pub fn new(pci: PortQueue, l4flow: L4Flow, detailed_records: bool) -> ConnectionManager<'a> {
+impl ConnectionManager {
+    pub fn new(pci: PortQueue, l4flow: L4Flow, detailed_records: bool) -> ConnectionManager {
         let old_manager_count: u16 = GLOBAL_MANAGER_COUNT.fetch_add(1, Ordering::SeqCst) as u16;
         let (ip, tcp_port_base) = (l4flow.ip, l4flow.port);
         let port_mask = pci.port.get_tcp_dst_port_mask();
@@ -391,7 +391,7 @@ impl<'a> ConnectionManager<'a> {
     }
 
     #[inline]
-    fn get_mut_con(&mut self, p: &u16) -> &mut ProxyConnection<'a> {
+    fn get_mut_con(&mut self, p: &u16) -> &mut ProxyConnection {
         &mut self.port2con[(p - self.tcp_port_base) as usize]
     }
 
@@ -411,7 +411,7 @@ impl<'a> ConnectionManager<'a> {
     }
 
     #[inline]
-    pub fn get_mut_by_port(&mut self, port: u16) -> Option<&mut ProxyConnection<'a>> {
+    pub fn get_mut_by_port(&mut self, port: u16) -> Option<&mut ProxyConnection> {
         if self.owns_tcp_port(port) {
             let c = self.get_mut_con(&port);
             // check if c is in use
@@ -425,7 +425,7 @@ impl<'a> ConnectionManager<'a> {
         }
     }
 
-    pub fn get_mut_by_sock(&mut self, sock: &(u32, u16)) -> Option<&mut ProxyConnection<'a>> {
+    pub fn get_mut_by_sock(&mut self, sock: &(u32, u16)) -> Option<&mut ProxyConnection> {
         let port = self.sock2port.get(sock);
         if port.is_some() {
             Some(&mut self.port2con[(port.unwrap() - self.tcp_port_base) as usize])
@@ -434,7 +434,7 @@ impl<'a> ConnectionManager<'a> {
         }
     }
 
-    pub fn get_mut_or_insert(&mut self, sock: &(u32, u16)) -> Option<&mut ProxyConnection<'a>> {
+    pub fn get_mut_or_insert(&mut self, sock: &(u32, u16)) -> Option<&mut ProxyConnection> {
         {
             // we borrow sock2port here !
             let port = self.sock2port.get(sock);

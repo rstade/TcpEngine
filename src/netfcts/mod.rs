@@ -44,13 +44,13 @@ use e2d2::native::zcsi::rte_ethdev_api::{rte_log_set_global_level, rte_log_set_l
                                      rte_log_get_level};
 use serde::de::DeserializeOwned;
 use self::tcp_common::L234Data;
-use netfcts::comm::{MessageFrom, MessageTo};
-use netfcts::comm::PipelineId;
-use netfcts::io::print_hard_statistics;
-use netfcts::recstore::SimpleStore;
-use netfcts::system::SystemData;
-use netfcts::tasks::TaskType;
-use netfcts::tcp_common::tcp_payload_size;
+use crate::netfcts::comm::{MessageFrom, MessageTo};
+use crate::netfcts::comm::PipelineId;
+use crate::netfcts::io::print_hard_statistics;
+use crate::netfcts::recstore::SimpleStore;
+use crate::netfcts::system::SystemData;
+use crate::netfcts::tasks::TaskType;
+use crate::netfcts::tcp_common::tcp_payload_size;
 
 #[derive(Deserialize, Clone)]
 struct Config<T: Sized + Clone> {

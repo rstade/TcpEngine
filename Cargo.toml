@@ -1,7 +1,9 @@
 [package]
 name = "tcpcengine"
-version = "0.3.2"
-authors = ["Rainer Stademann <rainer.stademann@silverengine.de>"]
+version = "0.4.0"
+authors = ["Rainer Stademann <rainer@spacebandit.de>"]
+edition = "2024"
+rust-version = "1.91.1"
 
 [lib]
 name = "tcp_lib"
@@ -14,7 +16,7 @@ path = "src/bin.rs"
 
 [dependencies]
 # we are using here e2de from branch e2d2-rs-v1 of https://github.com/rstade/NetBricks
-e2d2 = { version = "=1.0.10", path = "../NetBricks/framework", features = ["performance"] }
+e2d2 = { version = "=1.0.11", path = "../NetBricks/framework", features = ["performance"] }
 fnv = "*"
 log = ">=0.4"
 env_logger = ">=0.5"

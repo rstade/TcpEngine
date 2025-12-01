@@ -18,17 +18,17 @@ use e2d2::interface::{PmdPort, FlowSteeringMode};
 use e2d2::scheduler::StandaloneScheduler;
 
 use separator::Separatable;
-use netfcts::comm::PipelineId;
-use netfcts::conrecord::HasTcpState;
-use netfcts::io::print_tcp_counters;
+use crate::netfcts::comm::PipelineId;
+use crate::netfcts::conrecord::HasTcpState;
+use crate::netfcts::io::print_tcp_counters;
 #[cfg(feature = "profiling")]
 use netfcts::io::print_rx_tx_counters;
 
-use {get_tcp_generator_nfg, setup_pipelines};
-use {CData};
-use netfcts::comm::{MessageFrom, MessageTo};
-use {initialize_engine, ReleaseCause};
-use {TcpState, TcpStatistics};
+use {crate::get_tcp_generator_nfg, crate::setup_pipelines};
+use {crate::CData};
+use crate::netfcts::comm::{MessageFrom, MessageTo};
+use {crate::initialize_engine, crate::ReleaseCause};
+use {crate::TcpState, crate::TcpStatistics};
 
 
 #[derive(Debug, Clone, Copy, PartialEq)]

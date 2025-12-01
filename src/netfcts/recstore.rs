@@ -5,9 +5,9 @@ use std::fmt::Display;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::arch::x86_64::_rdtsc;
-use netfcts::conrecord::{ConRecord, HasConData, HasTcpState, TIME_STAMP_REDUCTION_FACTOR};
-use netfcts::tcp_common::ReleaseCause;
-use netfcts::tcp_common::TcpState;
+use crate::netfcts::conrecord::{ConRecord, HasConData, HasTcpState, TIME_STAMP_REDUCTION_FACTOR};
+use crate::netfcts::tcp_common::ReleaseCause;
+use crate::netfcts::tcp_common::TcpState;
 
 use separator::Separatable;
 
@@ -198,7 +198,7 @@ impl Storable for Extension {
     }
 }
 
-impl fmt::Display for Extension {
+impl Display for Extension {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -253,16 +253,16 @@ impl<T: Storable> Store64<T> {
     }
 
     #[inline]
-    pub fn iter_0(&self) -> Iter<ConRecord> {
+    pub fn iter_0(&self) -> Iter<'_, ConRecord> {
         self.store_0[0..self.len()].iter()
     }
 
     #[inline]
-    pub fn iter_1(&self) -> Iter<T> {
+    pub fn iter_1(&self) -> Iter<'_, T> {
         self.store_1[0..self.len()].iter()
     }
 
-    pub fn iter(&self) -> std::iter::Zip<std::slice::Iter<'_, ConRecord>, std::slice::Iter<'_, T>> {
+    pub fn iter(&self) -> std::iter::Zip<Iter<'_, ConRecord>, Iter<'_, T>> {
         self.iter_0().zip(self.iter_1())
     }
 
