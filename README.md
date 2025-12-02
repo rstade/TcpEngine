@@ -64,6 +64,8 @@ Scaling happens by distributing incoming client-side TCP connections using RSS o
 
 ## Architecture and Implementation
 
+A high-level overview of TcpEngine is shown in [TcpEngine Architecture](https://github.com/rstade/TcpEngine/blob/main/high-level-architecture.md).
+
 TcpEngine builds on a fork of [Netbricks](https://github.com/NetSys/NetBricks) for the user-space networking.
 NetBricks itself utilizes _DPDK_ for fast I/O.
 NetBricks uses a significantly higher abstraction level than _DPDK_.
