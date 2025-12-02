@@ -693,7 +693,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 counter_c[TcpStatistics::Unexpected] += 1;
                                 group_index = 2;
                             } else {
-                                trace! {"c2s: nothing to do?, tcp= {}, tcp_payload_size={}, expected ackn_for_fin ={}", tcp, tcp_payload_size(pdu), unsafe { c.seqn.ack_for_fin_p2c }};
+                                trace! {"c2s: nothing to do?, tcp= {}, tcp_payload_size={}, expected ackn_for_fin ={}", tcp, tcp_payload_size(pdu), unsafe { c.seqn.ack_for_fin_p2c }}
                             }
 
                             if c.client_state() == TcpState::Closed && c.server_state() == TcpState::Closed {

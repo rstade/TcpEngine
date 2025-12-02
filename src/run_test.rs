@@ -4,31 +4,26 @@ extern crate ipnet;
 extern crate bincode;
 
 use std::arch::x86_64::_rdtsc;
-use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
-use std::net::{SocketAddr, SocketAddrV4, TcpListener, TcpStream, Shutdown, Ipv4Addr};
-use std::sync::mpsc::RecvTimeoutError;
-use std::collections::HashMap;
+use std::net::{SocketAddr, SocketAddrV4, TcpStream, Shutdown, Ipv4Addr};
 use std::io::{Read, Write, BufWriter};
 use std::fs::File;
 use std::process;
 
-use e2d2::interface::{PmdPort, FlowSteeringMode};
-use e2d2::scheduler::StandaloneScheduler;
+use e2d2::interface::{FlowSteeringMode};
 
 use separator::Separatable;
-use crate::netfcts::comm::PipelineId;
 use crate::netfcts::conrecord::HasTcpState;
-use crate::netfcts::io::print_tcp_counters;
 #[cfg(feature = "profiling")]
 use netfcts::io::print_rx_tx_counters;
 
-use {crate::get_tcp_generator_nfg, crate::setup_pipelines};
+use {crate::get_tcp_generator_nfg, crate::install_pipelines_for_all_cores};
 use {crate::CData};
-use crate::netfcts::comm::{MessageFrom, MessageTo};
+use crate::netfcts::comm::MessageFrom;
 use {crate::initialize_engine, crate::ReleaseCause};
 use {crate::TcpState, crate::TcpStatistics};
+use crate::analysis::collect_from_main_reply;
 
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,23 +50,12 @@ pub fn run_test(test_type: TestType) {
     };
 
     // number of payloads sent, after which the connection is closed
+    #[cfg(any(test, feature = "test-support"))]
     let fin_by_client = configuration.engine.fin_by_client.unwrap_or(1000);
 
     runtime.start_schedulers().expect("cannot start schedulers");
 
-
-    runtime
-        .install_pipeline_on_cores(Box::new(
-            move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
-                setup_pipelines(
-                    core,
-                    pmd_ports,
-                    s,
-                    run_configuration_cloned.clone(),
-                    &get_tcp_generator_nfg().clone(),
-                );
-            },
-        ))
+    install_pipelines_for_all_cores(&mut runtime, run_configuration_cloned, get_tcp_generator_nfg())
         .expect("cannot install pipelines");
 
 
@@ -120,53 +104,35 @@ pub fn run_test(test_type: TestType) {
     runtime.start();
 
     // give threads some time to do initialization work
-    thread::sleep(Duration::from_millis(1000 as u64));
+    thread::sleep(Duration::from_millis(1000u64));
 
     if test_type == TestType::Client {
-        // set up servers
-        for server in run_configuration.engine_configuration.targets.clone() {
-            let target_port = server.port; // moved into thread
-            let target_ip = server.ip;
-            let id = server.id;
-            thread::spawn(move || match TcpListener::bind((target_ip, target_port)) {
-                Ok(listener1) => {
-                    debug!("bound server {} to {}:{}", id, target_ip, target_port);
-                    for stream in listener1.incoming() {
-                        let mut stream = stream.unwrap();
-                        let mut buffer = [0u8; 256];
-                        debug!("{} received connection from: {}", id, stream.peer_addr().unwrap());
-                        let nr_bytes = stream
-                            .read(&mut buffer[..])
-                            .expect(&format!("cannot read from stream {}", stream.peer_addr().unwrap()));
-                        let cdata: CData = bincode::deserialize(&buffer[0..nr_bytes]).expect("cannot deserialize cdata");
-                        debug!("{} received {:?} from: {}", id, cdata, stream.peer_addr().unwrap());
-                        stream.write(&"Thank you".as_bytes()).expect("cannot write to stream");
-                        for i in 1..fin_by_client {
-                            stream
-                                .read(&mut buffer[..])
-                                .expect(&format!("cannot read from stream at try {}", i + 1));
-                            stream
-                                .write(&format!("Thank you, {} times", i + 1).as_bytes())
-                                .expect("cannot write to stream");
-                        }
-                    }
-                }
-                _ => {
-                    panic!("failed to bind server {} to {}:{}", id, target_ip, target_port);
-                }
-            });
+        // set up local test servers (only when test-support is enabled)
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            use crate::test_support::spawn_test_servers;
+            let _handles = spawn_test_servers(
+                fin_by_client,
+                run_configuration.engine_configuration.targets.clone(),
+            );
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            warn!(
+                "feature 'test-support' not enabled; skipping local servers for Client test"
+            );
         }
 
-        thread::sleep(Duration::from_millis(1000 as u64)); // wait for the servers
+        thread::sleep(Duration::from_millis(1000u64)); // wait for the servers
     }
     // start generator
 
     let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
     mtx.send(MessageFrom::StartEngine).unwrap();
-    thread::sleep(Duration::from_millis(2000 as u64));
+    thread::sleep(Duration::from_millis(2000u64));
 
     if test_type == TestType::Server {
-        let timeout = Duration::from_millis(1000 as u64);
+        let timeout = Duration::from_millis(1000u64);
         for ntry in 0..run_configuration.engine_configuration.test_size.unwrap() as u16 {
             let target_socket;
             if rfs_mode == FlowSteeringMode::Port {
@@ -215,9 +181,9 @@ pub fn run_test(test_type: TestType) {
         }
     }
 
-    thread::sleep(Duration::from_millis(1000 as u64));
+    thread::sleep(Duration::from_millis(1000u64));
     mtx.send(MessageFrom::PrintPerformance(cores)).unwrap();
-    thread::sleep(Duration::from_millis(100 as u64));
+    thread::sleep(Duration::from_millis(100u64));
 
 
     mtx.send(MessageFrom::FetchCounter).unwrap();
@@ -231,36 +197,10 @@ pub fn run_test(test_type: TestType) {
     }
 
 
-    let mut tcp_counters_to = HashMap::new();
-    let mut tcp_counters_from = HashMap::new();
-    let mut con_records = HashMap::new();
-    let mut start_stop_stamps: HashMap<PipelineId, (u64, u64)> = HashMap::new();
-
-    loop {
-        match reply_mrx.recv_timeout(Duration::from_millis(1000)) {
-            Ok(MessageTo::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, _rx_tx_stats)) => {
-                print_tcp_counters(&pipeline_id, &tcp_counter_to, &tcp_counter_from);
-                #[cfg(feature = "profiling")]
-                print_rx_tx_counters(&pipeline_id, &_rx_tx_stats.unwrap());
-                tcp_counters_to.insert(pipeline_id.clone(), tcp_counter_to);
-                tcp_counters_from.insert(pipeline_id, tcp_counter_from);
-            }
-            Ok(MessageTo::CRecords(pipeline_id, c_records_client, c_records_server)) => {
-                con_records.insert(pipeline_id, (c_records_client, c_records_server));
-            }
-            Ok(MessageTo::TimeStamps(p, t_start, t_stop)) => {
-                start_stop_stamps.insert(p.clone(), (t_start, t_stop));
-            }
-            Ok(_m) => error!("illegal MessageTo received from reply_to_main channel"),
-            Err(RecvTimeoutError::Timeout) => {
-                break;
-            }
-            Err(e) => {
-                error!("error receiving from reply_to_main channel (reply_mrx): {}", e);
-                break;
-            }
-        }
-    }
+    let collected = collect_from_main_reply(&reply_mrx, 1000);
+    let tcp_counters_to = collected.tcp_counters_to;
+    let tcp_counters_from = collected.tcp_counters_from;
+    let con_records = collected.con_records;
 
     if run_configuration
         .engine_configuration

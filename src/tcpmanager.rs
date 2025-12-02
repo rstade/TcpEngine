@@ -299,7 +299,7 @@ pub struct ConnectionManagerC {
     pipeline_id: PipelineId,
     tcp_port_base: u16,
     available_ports_count: usize,
-    // e.g. used as a listen port, not assigned by create
+    // e.g., used as a listen port, not assigned by create
     listen_port: u16,
     ip: u32,
     // ip address to use for connections of this manager
@@ -307,8 +307,8 @@ pub struct ConnectionManagerC {
     detailed_records: bool,
 }
 
-const MAX_CONNECTIONS: usize = 0xFFFF as usize;
-const MAX_RECORDS: usize = 0x3FFFF as usize;
+const MAX_CONNECTIONS: usize = 0xFFFFusize;
+const MAX_RECORDS: usize = 0x3FFFFusize;
 
 impl ConnectionManagerC {
     pub fn new(pipeline_id: PipelineId, pci: PortQueue, l4flow: &L4Flow, detailed_records: bool) -> ConnectionManagerC {
@@ -485,14 +485,14 @@ impl ConnectionManagerC {
     #[inline]
     pub fn release(&mut self, port: u16, wheel: &mut TimerWheel<u16>) {
         let c = &mut self.port2con[(port - self.tcp_port_base) as usize];
-        // only if it is in use, i.e. it has been not released already
+        // only if it is in use, i.e., it has been not released yet
         if c.in_use() {
             self.free_ports.push_back(port);
             c.release();
             //remove port from timer wheel by overwriting it
             let old = wheel.replace(c.wheel_slot_and_index, 0);
             assert_eq!(old.unwrap(), port);
-            // we keep unused connection in port2con table
+            // we keep unused connection in "port2con" table
         }
     }
 

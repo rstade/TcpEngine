@@ -13,6 +13,8 @@ extern crate serde_derive;
 extern crate eui48;
 extern crate uuid;
 extern crate serde;
+
+pub mod analysis;
 extern crate bincode;
 extern crate serde_json;
 extern crate ipnet;
@@ -26,6 +28,9 @@ mod tcpmanager;
 pub mod proxymanager;
 pub mod netfcts;
 pub mod nfsimpleproxy;
+pub mod runtime_install;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 use std::arch::x86_64::_rdtsc;
 use netfcts::tcp_common::{CData, L234Data, ReleaseCause, TcpState, TcpStatistics};
@@ -57,6 +62,8 @@ use netfcts::tcp_common::tcp_payload_size;
 use nfdelayedproxy::setup_delayed_proxy;
 use nfsimpleproxy::setup_simple_proxy;
 use nftraffic::setup_generator;
+
+pub use runtime_install::install_pipelines_for_all_cores;
 
 // Replacement for former `trait alias` of a function-like constraint
 pub trait FnPayload: Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize

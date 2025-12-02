@@ -1,0 +1,9 @@
+[env]
+# Ensure the linker and runtime loader can find DPDK libraries.
+# This sets the variables for all Cargo invocations (build, test, run).
+LD_LIBRARY_PATH = "/usr/local/lib/x86_64-linux-gnu/"
+LIBRARY_PATH = "/usr/local/lib/x86_64-linux-gnu/"
+
+[target.x86_64-unknown-linux-gnu]
+# Also, pass an explicit native library search path to the linker.
+rustflags = ["-L", "native=/usr/local/lib/x86_64-linux-gnu/"]
