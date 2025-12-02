@@ -1,7 +1,7 @@
 [package]
 name = "tcpcengine"
 version = "0.4.0"
-authors = ["Rainer Stademann <rainer@spacebandit.de>"]
+authors = ["Rainer Stademann <25755224+rstade@users.noreply.github.com>"]
 edition = "2024"
 rust-version = "1.91.1"
 
