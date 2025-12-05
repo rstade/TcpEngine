@@ -346,8 +346,9 @@ pub fn setup_delayed_proxy<F1, F2>(
                     // this is a little bit tricky: we replace the borrowed packet of the closure, with the syn packet
                     // note, this just replaces pointers, e.g. the pointer to the orignal mbuf is replaced with the pointer to the new mbuf in the syn packet
                     let mut old_p = p.replace(syn);
-                    old_p.dereference_mbuf(); // as packet_in no longer references the original mbuf
-                debug!("old_p.refcnt= {}, old_p= {}", old_p.refcnt(), old_p);
+                    // next line no longer needed as Drop for old_p handles dereferencing
+                    // old_p.dereference_mbuf(); // as packet_in no longer references the original mbuf
+                    trace!("old_p.refcnt= {}, old_p= {}", old_p.refcnt(), old_p);
                     ip = old_p.headers().ip(1).clone();
                     tcp = old_p.headers().tcp(2).clone();
                 }

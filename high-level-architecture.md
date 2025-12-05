@@ -91,4 +91,3 @@
 - Uses DPDK via NetBricks/e2d2. PCI `PmdPort` and optional `KNI` interface per NIC.
 - Cargo config sets DPDK library search paths; `build.sh` exports the same for shell builds.
 
-If you’d like, I can also generate a mermaid diagram or PNG/SVG based on this blueprint.

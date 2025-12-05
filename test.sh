@@ -1,119 +1,98 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+DPDK_LD_PATH="/usr/local/lib/x86_64-linux-gnu/"
+# Prepend DPDK path without failing when vars are unset (due to set -u)
+export LIBRARY_PATH="${DPDK_LD_PATH}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${DPDK_LD_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-#we flush the ARP cache because outdated ARP entries may let tests fail
-sudo ip -s -s neigh flush all
-
-if [ $# -ge 1 ]; then
-    TASK=$1
-else
-    TASK=all
+# Optionally add external shared library from NetBricks if present
+EXTRA_SO_REL="../NetBricks/target/native/libzcsi.so"
+if [[ -f "$EXTRA_SO_REL" ]]; then
+  # Resolve absolute path and prepend its directory to LD_LIBRARY_PATH
+  EXTRA_SO_DIR="$(cd "$(dirname "$EXTRA_SO_REL")" && pwd -P)"
+  EXTRA_SO_ABS="${EXTRA_SO_DIR}/$(basename "$EXTRA_SO_REL")"
+  export LD_LIBRARY_PATH="${EXTRA_SO_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  # Preload the library while preserving any existing LD_PRELOAD
+  export LD_PRELOAD="${EXTRA_SO_ABS}${LD_PRELOAD:+:${LD_PRELOAD}}"
 fi
 
-case $TASK in
-    # the following first targets are testing the TcpEngine as mode=DelayedProxyEngine or SimpleProxyEngine
-    test_rfs_ip)
-        export RUST_LOG="tcp_lib=info,test_tcp_proxy=debug,e2d2=info"
-        export RUST_BACKTRACE=1
-        executable=`cargo test $2 $3 $4 --no-run --message-format=json --test test_tcp_proxy | jq -r 'select((.profile.test == true) and (.target.name == "test_tcp_proxy")) | .filenames[]'`
-        echo $executable
-        echo ./tests/test_rfs_ip.toml > tests/toml_file.txt
-        sudo -E env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    test_rfs_ip.2)
-        export RUST_LOG="tcp_lib=info,test_tcp_proxy=info,e2d2=info"
-        export RUST_BACKTRACE=1
-        executable=`cargo test $2 --no-run --message-format=json --test test_tcp_proxy | jq -r 'select((.profile.test == true) and (.target.name == "test_tcp_proxy")) | .filenames[]'`
-        echo $executable
-        echo ./tests/test_rfs_ip.2.toml > tests/toml_file.txt
-        sudo -E env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    test_rfs_port)
-        export RUST_LOG="tcp_lib=debug,test_tcp_proxy=debug,e2d2=info,netfcts=debug"tcp
-        export RUST_BACKTRACE=1
-        executable=`cargo test $2 $3 $4 --no-run --message-format=json --test test_tcp_proxy | jq -r 'select((.profile.test == true) and (.target.name == "test_tcp_proxy")) | .filenames[]'`
-        echo $executable
-        echo ./tests/test_rfs_port.toml > tests/toml_file.txt
-        sudo -E env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    timeout)
-        export RUST_BACKTRACE=1
-        export RUST_LOG="tcp_lib=debug,timeout=debug,e2d2=info"
-        executable=`cargo test $2 $3 $4 --no-run --message-format=json --test timeout | jq -r 'select((.profile.test == true) and (.target.name == "timeout")) | .filenames[]'`
-        echo $executable
-        echo ./tests/timeout.toml > tests/toml_file.txt
-        sudo -E env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    timeout.2)
-        export RUST_BACKTRACE=1
-        export RUST_LOG="tcp_lib=info,timeout=info,e2d2=info"
-        executable=`cargo test $2 $3 $4 --no-run --message-format=json --test timeout | jq -r 'select((.profile.test == true) and (.target.name == "timeout")) | .filenames[]'`
-        echo $executable
-        echo ./tests/timeout.2.toml > tests/toml_file.txt
-        sudo -E env "PATH=$PATH" $executable --nocapture
-        ;;
-    client_syn_fin)
-        export RUST_LOG="tcp_lib=info,client_syn_fin=info,e2d2=info"
-        export RUST_BACKTRACE=1
-        executable=`cargo test $2 $3 $4 --no-run --message-format=json --test client_syn_fin | jq -r 'select((.profile.test == true) and (.target.name == "client_syn_fin")) | .filenames[]'`
-        echo $executable
-        echo ./tests/client_syn_fin.toml > tests/toml_file.txt
-        sudo -E env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    client_syn_fin.2)
-        export RUST_LOG="tcp_lib=info,client_syn_fin=info,e2d2=info"
-        executable=`cargo test $2 --no-run --message-format=json --test client_syn_fin | jq -r 'select((.profile.test == true) and (.target.name == "client_syn_fin")) | .filenames[]'`
-        echo $executable
-        echo ./tests/client_syn_fin.2.toml > tests/toml_file.txt
-        sudo -E env "PATH=$PATH" $executable --nocapture
-        ;;
-    ## the following targets are testing the TcpEngine as mode=TrafficEngine
-    test_as_client)
-        export RUST_LOG="tcp_lib=debug,e2d2=debug", RUST_BACKTRACE=1
-        executable=`cargo test $2 $3 $4 --no-run --message-format=json --test test_as_client | jq -r 'select((.profile.test == true) and (.target.name == "test_as_client")) | .filenames[]'`
-        echo $executable
-        echo ./tests/test_gen.toml > tests/toml_file.txt
-        sudo -E env "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    test_as_server)
-        export RUST_LOG="tcp_lib=info,e2d2=info", RUST_BACKTRACE=1
-        executable=`cargo test $2 $3 $4 --no-run --message-format=json --test test_as_server | jq -r 'select((.profile.test == true) and (.target.name == "test_as_server")) | .filenames[]'`
-        echo $executable
-        echo ./tests/test_gen.toml > tests/toml_file.txt
-        sudo -E env "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    macswap)
-        export RUST_LOG="tcp_lib=info,macswap=info,e2d2=info", RUST_BACKTRACE=1
-        executable=`cargo test $2 $3 $4 --no-run --message-format=json --test macswap | jq -r 'select((.profile.test == true) and (.target.name == "macswap")) | .filenames[]'`
-        echo $executable
-        echo ./tests/macswap.toml > tests/toml_file.txt
-        sudo -E env "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    test_as_client.2)
-        export RUST_LOG="tcp_lib=info,e2d2=info", RUST_BACKTRACE=1
-        executable=`cargo test $2 --no-run --message-format=json --test test_as_client | jq -r 'select((.profile.test == true) and (.target.name == "test_as_client")) | .filenames[]'`
-        echo $executable
-        echo ./tests/test_gen.2.toml > tests/toml_file.txt
-        sudo -E env "PATH=$PATH; LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    test_as_server.2)
-        export RUST_LOG="tcp_lib=info,e2d2=info", RUST_BACKTRACE=1
-        executable=`cargo test $2 --no-run --message-format=json --test test_as_server | jq -r 'select((.profile.test == true) and (.target.name == "test_as_server")) | .filenames[]'`
-        echo $executable
-        echo ./tests/test_gen.2.toml > tests/toml_file.txt
-        sudo -E env "PATH=$PATH" $executable --nocapture
-        ;;
-    macswap.2)
-        export RUST_LOG="tcp_lib=info,macswap=info,e2d2=info", RUST_BACKTRACE=1
-        executable=`cargo test $2 --no-run --message-format=json --test macswap | jq -r 'select((.profile.test == true) and (.target.name == "macswap")) | .filenames[]'`
-        echo $executable
-        echo ./tests/macswap.2.toml > tests/toml_file.txt
-        sudo -E env "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" $executable --nocapture
-        ;;
-    all)
-        ./test.sh test_as_client $2 $3 $4
-        ./test.sh test_as_server $2 $3 $4
-        ;;
+# we flush the ARP cache because outdated ARP entries may let tests fail
+sudo ip -s -s neigh flush all
+
+# Helper to build the selected test binary and run it with the given TOML and RUST_LOG
+# Usage: build_and_run <test_name> <toml_path> <rust_log> [extra cargo args...]
+build_and_run() {
+  local test_name="$1"
+  local toml_path="$2"
+  local rust_log="$3"
+  shift 3 || true
+
+  export RUST_LOG="$rust_log"
+  export RUST_BACKTRACE=1
+
+  local filter
+  filter="select((.profile.test == true) and (.target.name == \"${test_name}\")) | .filenames[]"
+
+  local executable
+  executable=$(cargo test "$@" --no-run --message-format=json --test "${test_name}" | jq -r "$filter")
+
+  echo "$executable"
+  echo "$toml_path" > tests/toml_file.txt
+  # Preserve PATH and LD_LIBRARY_PATH explicitly when invoking via sudo
+  sudo -E env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "LD_PRELOAD=${LD_PRELOAD-}" "$executable" --nocapture
+}
+
+TASK=${1:-all}
+
+case "$TASK" in
+  # the following first targets are testing the TcpEngine as mode=DelayedProxyEngine or SimpleProxyEngine
+  test_rfs_ip)
+    build_and_run test_tcp_proxy ./tests/test_rfs_ip.toml "tcp_lib=info,test_tcp_proxy=debug,e2d2=info" "${@:2}"
+    ;;
+  test_rfs_ip.2)
+    build_and_run test_tcp_proxy ./tests/test_rfs_ip.2.toml "tcp_lib=info,test_tcp_proxy=info,e2d2=info" "${@:2}"
+    ;;
+  test_rfs_ip.3)
+    build_and_run test_tcp_proxy ./tests/test_rfs_ip.3.toml "tcp_lib=info,test_tcp_proxy=info,e2d2=info" "${@:2}"
+    ;;
+  test_rfs_port)
+    build_and_run test_tcp_proxy ./tests/test_rfs_port.toml "tcp_lib=debug,test_tcp_proxy=debug,e2d2=info,netfcts=debug" "${@:2}"
+    ;;
+  timeout)
+    build_and_run timeout ./tests/timeout.toml "tcp_lib=debug,timeout=debug,e2d2=info" "${@:2}"
+    ;;
+  timeout.2)
+    build_and_run timeout ./tests/timeout.2.toml "tcp_lib=info,timeout=info,e2d2=info" "${@:2}"
+    ;;
+  client_syn_fin)
+    build_and_run client_syn_fin ./tests/client_syn_fin.toml "tcp_lib=info,client_syn_fin=info,e2d2=info" "${@:2}"
+    ;;
+  client_syn_fin.2)
+    build_and_run client_syn_fin ./tests/client_syn_fin.2.toml "tcp_lib=info,client_syn_fin=info,e2d2=info" "${@:2}"
+    ;;
+  ## the following targets are testing the TcpEngine as mode=TrafficEngine
+  test_as_client)
+    build_and_run test_as_client ./tests/test_gen.toml "tcp_lib=debug,e2d2=debug" "${@:2}"
+    ;;
+  test_as_server)
+    build_and_run test_as_server ./tests/test_gen.toml "tcp_lib=info,e2d2=info" "${@:2}"
+    ;;
+  macswap)
+    build_and_run macswap ./tests/macswap.toml "tcp_lib=info,macswap=info,e2d2=info" "${@:2}"
+    ;;
+  test_as_client.2)
+    build_and_run test_as_client ./tests/test_gen.2.toml "tcp_lib=info,e2d2=info" "${@:2}"
+    ;;
+  test_as_server.2)
+    build_and_run test_as_server ./tests/test_gen.2.toml "tcp_lib=info,e2d2=info" "${@:2}"
+    ;;
+  macswap.2)
+    build_and_run macswap ./tests/macswap.2.toml "tcp_lib=info,macswap=info,e2d2=info" "${@:2}"
+    ;;
+  all)
+    "$0" test_as_client "${@:2}"
+    "$0" test_as_server "${@:2}"
+    ;;
 esac
 
 
