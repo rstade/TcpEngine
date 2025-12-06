@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::Read;
-use eui48::{MacAddress, ParseError};
+use macaddr::{MacAddr6 as MacAddress, ParseError};
 use std::path::Path;
 
 const CPU_CLOCK_PATH: &str = "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq";
@@ -27,7 +27,11 @@ pub fn get_mac_from_ifname(ifname: &str) -> Result<MacAddress, ParseError> {
     let iface = Path::new("/sys/class/net").join(ifname).join("address");
     let mut macaddr = String::new();
     File::open(iface).and_then(|mut f| f.read_to_string(&mut macaddr)).unwrap();
-    MacAddress::parse_str(&macaddr.lines().next().unwrap_or(""))
+    macaddr
+        .lines()
+        .next()
+        .unwrap_or("")
+        .parse::<MacAddress>()
 }
 
 pub fn get_mac_string_from_ifname(ifname: &str) -> Result<String, ParseError> {

@@ -58,6 +58,9 @@ case "$TASK" in
   test_rfs_port)
     build_and_run test_tcp_proxy ./tests/test_rfs_port.toml "tcp_lib=debug,test_tcp_proxy=debug,e2d2=info,netfcts=debug" "${@:2}"
     ;;
+  test_rfs_port.3)
+      build_and_run test_tcp_proxy ./tests/test_rfs_port.3.toml "tcp_lib=info,test_tcp_proxy=debug,e2d2=info,netfcts=info" "${@:2}"
+      ;;
   timeout)
     build_and_run timeout ./tests/timeout.toml "tcp_lib=debug,timeout=debug,e2d2=info" "${@:2}"
     ;;

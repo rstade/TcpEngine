@@ -1,7 +1,6 @@
 extern crate ctrlc;
 extern crate e2d2;
 extern crate env_logger;
-extern crate eui48;
 extern crate ipnet;
 extern crate separator;
 extern crate uuid;

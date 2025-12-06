@@ -7,7 +7,7 @@ use std::ops::{Index, IndexMut};
 use e2d2::interface::{Pdu, NetSpec};
 use e2d2::common;
 
-use eui48::MacAddress;
+use macaddr::MacAddr6 as MacAddress;
 use std::convert::TryFrom;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]

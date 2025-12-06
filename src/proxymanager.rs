@@ -18,7 +18,7 @@ use crate::netfcts::utils::shuffle_ports;
 #[cfg(feature = "profiling")]
 use netfcts::utils::TimeAdder;
 
-use eui48::MacAddress;
+use macaddr::MacAddr6 as MacAddress;
 use crate::netfcts::recstore::ProxyRecStore;
 
 pub union Seqn {

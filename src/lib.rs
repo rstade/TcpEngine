@@ -10,7 +10,6 @@ extern crate toml;
 extern crate separator;
 #[macro_use]
 extern crate serde_derive;
-extern crate eui48;
 extern crate uuid;
 extern crate serde;
 
@@ -39,13 +38,11 @@ pub use netfcts::conrecord::ConRecord;
 pub use tcpmanager::{Connection};
 pub use proxymanager::ProxyConnection;
 
-use eui48::MacAddress;
-use uuid::Uuid;
+use macaddr::MacAddr6 as MacAddress;
 
 use e2d2::scheduler::*;
 use e2d2::interface::{PmdPort, Pdu, PciQueueType, KniQueueType};
 
-use netfcts::tasks::*;
 use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, RunTime, strip_payload};
 use netfcts::utils::Timeouts;
 
@@ -221,27 +218,6 @@ pub fn setup_pipelines<NFG>(
             debug!("associated kni= None");
         }
 
-        let uuid = Uuid::new_v4();
-        let name = String::from("KniHandleRequest");
-
-        // Kni request handler runs on first core of the associated pci port (rxq == 0)
-        if pci.is_some()
-            && kni.is_some()
-            && kni.as_ref().unwrap().port.is_native_kni()
-            && pci.as_ref().unwrap().port_queue.rxq() == 0
-        {
-            sched.add_runnable(
-                Runnable::from_task(
-                    uuid,
-                    name,
-                    KniHandleRequest {
-                        kni_port: kni.as_ref().unwrap().port.clone(),
-                        last_tick: 0,
-                    },
-                )
-                .move_ready(), // this task must be ready from the beginning to enable managing the KNI i/f
-            );
-        }
         nfg(core, pci, kni, sched, run_configuration.clone());
     }
 }

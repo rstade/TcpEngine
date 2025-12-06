@@ -25,7 +25,7 @@ use std::thread::sleep;
 
 
 use ipnet::Ipv4Net;
-use eui48::MacAddress;
+use macaddr::MacAddr6 as MacAddress;
 use uuid::Uuid;
 use separator::Separatable;
 
@@ -527,7 +527,7 @@ pub fn setup_kernel_interfaces(context: &NetBricksContext) {
             port.port_id(),
             port.mac_address()
         );
-        if port.is_native_kni() || port.is_virtio() {
+        if port.is_virtio() {
             let associated_dpdk_port_id = port.associated_dpdk_port_id();
             let associated_port = if associated_dpdk_port_id.is_some() {
                 context.id_to_port.get(&associated_dpdk_port_id.unwrap())
@@ -582,14 +582,14 @@ pub fn setup_linux_if(
     debug!("setup_kni");
     //# ip link set dev vEth1 address XX:XX:XX:XX:XX:XX
     let output = Command::new("ip")
-        .args(&["link", "set", "dev", kni_name, "address", &mac_address.to_hex_string()])
+        .args(&["link", "set", "dev", kni_name, "address", &mac_address.to_string()])
         .output()
         .expect("failed to assign MAC address to kni i/f");
     let reply = output.stderr;
 
     debug!(
         "assigning MAC addr {} to {}: {}, {}",
-        &mac_address.to_hex_string(),
+        &mac_address.to_string(),
         kni_name,
         output.status,
         String::from_utf8_lossy(&reply)
@@ -709,9 +709,9 @@ pub fn new_port_queues_for_core(
 
     if associated_kni_port.is_some() {
         let kni_port = associated_kni_port.unwrap();
-        if !(kni_port.is_native_kni() || kni_port.is_virtio()) {
+        if !kni_port.is_virtio() {
             panic!(
-                "associated kernel network interface {} must be either of type Kni or type Virtio",
+                "associated kernel network interface {} must be of type virtio (type kni no longer supported)",
                 kni_port.name()
             );
         }

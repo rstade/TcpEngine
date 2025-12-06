@@ -199,13 +199,13 @@ name = "e2d2"
 version = "1.0.11"
 dependencies = [
  "byteorder",
- "eui48",
  "fnv",
  "getopts",
  "ipnet",
  "lazy_static",
  "libc",
  "log",
+ "macaddr",
  "net2",
  "nix 0.30.1",
  "regex",
@@ -260,15 +260,6 @@ checksum = "64f18991e7bf11e7ffee451b5318b5c1a73c52d0d0ada6e5a3017c8c1ced6a21"
 dependencies = [
  "libc",
  "str-buf",
-]
-
-[[package]]
-name = "eui48"
-version = "1.1.0"
-source = "git+https://github.com/readysettech/eui48.git#d7db8acbeb3e6e59e0fafd71ff01e8c7510d8810"
-dependencies = [
- "regex",
- "serde",
 ]
 
 [[package]]
@@ -393,6 +384,15 @@ name = "log"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
+
+[[package]]
+name = "macaddr"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baee0bbc17ce759db233beb01648088061bf678383130602a298e6998eedb2d8"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "memchr"
@@ -712,10 +712,10 @@ dependencies = [
  "ctrlc",
  "e2d2",
  "env_logger",
- "eui48",
  "fnv",
  "ipnet",
  "log",
+ "macaddr",
  "rand",
  "rustyline",
  "separator",

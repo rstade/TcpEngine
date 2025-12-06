@@ -333,7 +333,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                 let payload_sz;
                 unsafe {
                     // save clone of payload packet to connection state
-                    let p_clone = Box::new(p.clone()); // creates reference to the mbuf in p
+                    let p_clone = Box::new(p.clone_from_same_mbuf()); // creates reference to the mbuf in p
                     payload_sz = tcp_payload_size(&p_clone);
                     c.payload_packet = Some(p_clone);
                     f_select_server(c, servers);
@@ -345,16 +345,14 @@ pub fn setup_delayed_proxy<F1, F2>(
                     assert!(ok);
                     // this is a little bit tricky: we replace the borrowed packet of the closure, with the syn packet
                     // note, this just replaces pointers, e.g. the pointer to the orignal mbuf is replaced with the pointer to the new mbuf in the syn packet
-                    let mut old_p = p.replace(syn);
+                    let old_p = p.replace(syn);
+                    // the borrowed packet is now in p_old
                     // next line no longer needed as Drop for old_p handles dereferencing
                     // old_p.dereference_mbuf(); // as packet_in no longer references the original mbuf
                     trace!("old_p.refcnt= {}, old_p= {}", old_p.refcnt(), old_p);
                     ip = old_p.headers().ip(1).clone();
                     tcp = old_p.headers().tcp(2).clone();
                 }
-
-                // the new syn packet is the parsed proxy for p
-                //let mut new_syn= p.clone_without_ref_counting();
 
                 let ok = p.push_header(&ip);
                 assert!(ok);
@@ -397,7 +395,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                 //debug!("data_len= { }, p= { }",p.data_len(), p);
                 prepare_checksum_and_ttl(p);
                 // we clone the packet and send it via the extra queue, the original p gets discarded
-                let p_clone = unsafe { p.clone() };
+                let p_clone = unsafe { p.clone_from_same_mbuf() };
                 trace!("syn_ack_recv: p_clone/p.refcnt= {}/{}", p_clone.refcnt(), p.refcnt());
                 trace!("last ACK of three way handshake towards server: L4: {}", p_clone.headers().tcp(2));
                 producer.enqueue_one(p_clone);

@@ -1,15 +1,11 @@
 use std::arch::x86_64::_rdtsc;
 use e2d2::headers::{IpHeader, MacHeader, TcpHeader};
-use e2d2::interface::PmdPort;
 use e2d2::interface::Pdu;
-use e2d2::native::zcsi::rte_kni_handle_request;
 use e2d2::native::zcsi::{mbuf_alloc_bulk, MBuf};
 use e2d2::queues::MpscProducer;
 use e2d2::scheduler::{Executable, Runnable, Scheduler, StandaloneScheduler};
-use std::sync::Arc;
 use uuid::Uuid;
 use crate::netfcts::tcp_common::L234Data;
-//use separator::Separatable;
 
 #[derive(Debug)]
 pub enum TaskType {
@@ -25,27 +21,6 @@ pub fn install_task<T: Executable + 'static>(sched: &mut StandaloneScheduler, ta
     let uuid = Uuid::new_v4();
     sched.add_runnable(Runnable::from_task(uuid, task_name.to_string(), task).move_unready());
     uuid
-}
-
-pub struct KniHandleRequest {
-    pub kni_port: Arc<PmdPort>,
-    pub last_tick: u64,
-}
-
-impl Executable for KniHandleRequest {
-    fn execute(&mut self) -> (u32, i32) {
-        let now = unsafe { _rdtsc() };
-        if now - self.last_tick >= 22700 * 1000 {
-            // roughly each 10 ms
-            unsafe {
-                rte_kni_handle_request(self.kni_port.get_rte_kni());
-            };
-            self.last_tick = now;
-            (1, 0)
-        } else {
-            (0, 0)
-        }
-    }
 }
 
 pub struct PacketInjector {
@@ -124,7 +99,7 @@ impl<'a> PacketInjector {
 
     #[inline]
     pub fn create_packet_from_mbuf(&mut self, mbuf: *mut MBuf) -> Pdu {
-        let p = unsafe { self.packet_prototype.copy_use_mbuf(mbuf) };
+        let p =  self.packet_prototype.copy_use_mbuf(mbuf) ;
         p
     }
 }
@@ -219,9 +194,7 @@ impl<'a> Executable for TickGenerator {
         let p;
         let now = unsafe { _rdtsc() };
         if now - self.last_tick >= self.tick_length {
-            unsafe {
-                p = self.packet_prototype.copy();
-            }
+            p = self.packet_prototype.copy();
             self.producer.enqueue_one(p.unwrap());
             self.last_tick = now;
             self.tick_count += 1;
