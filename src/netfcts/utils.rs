@@ -1,3 +1,4 @@
+use serde_derive::Deserialize;
 use rand::thread_rng;
 use rand::seq::SliceRandom;
 

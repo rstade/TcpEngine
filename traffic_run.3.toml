@@ -1,0 +1,18 @@
+[netbricks]
+name        = "TcpEngine"
+master_core = 0
+pool_size   = 2048              # default 2048
+cache_size  = 128               # default 32
+cores       = [  1, 2, 6, 7, ]
+ports       = [ 
+                    { name="72:00.0", rxd= 4096, txd= 4096, cores = [ 1, 2, 6, 7, ],  checksum = false, kni="virtio:virtio_user0", fdir = { pballoc="RteFdirPballoc256k", mode="RteFdirModePerfect", ipv4_mask= {src_ip="0.0.0.0", dst_ip="FFFFFFFF"}, src_port_mask="0", dst_port_mask="E000"}, flow_steering= "Port"  },
+                    { name="virtio:virtio_user0,path=/dev/vhost-net,iface=tap01,queues={},queue_size=1024", rxd=64, txd=64, cores = [1], k_cores = [0], namespace="virtio01", mac="a0:36:9f:82:9c:fc", ipnet="192.168.222.2/24"  }
+              ] 
+[engine]
+engine      = { mode = "TrafficGenerator", port=20001, timeouts= { established= 10000 }, cps_limit=265000, max_open= 2000, detailed_records = false, fin_by_client= 1000, fin_by_server= 1   }
+
+targets     = [
+                { id = "webserver1", ip = "192.168.222.100", mac="a0:36:9f:82:9c:fe" , port = 10000 },   # address of linux-i/f enp114s0f1 on same server
+              ]
+
+test_size   = 10000

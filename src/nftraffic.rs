@@ -6,7 +6,7 @@ use e2d2::queues::{new_mpsc_queue_pair, new_mpsc_queue_pair_with_size};
 
 use std::sync::mpsc::channel;
 use std::sync::atomic::Ordering;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::arch::x86_64::_rdtsc;
 
 use uuid::Uuid;
@@ -992,10 +992,11 @@ pub fn setup_generator<FPL>(
                                     c.push_state(TcpState::Established);
                                     ready_connection = Some(c.port());
                                     debug!(
-                                        "{} client: connection for port {} to DUT ({:?}) established ",
+                                        "{} client: connection for port {} to DUT ({:?}, {:?}) established ",
                                         thread_id,
                                         c.port(),
-                                        src_sock
+                                        Ipv4Addr::from(src_sock.0),
+                                        src_sock.1
                                     );
                                     synack_received(pdu, &mut c);
                                     counter_c[TcpStatistics::SentSynAck2] += 1;

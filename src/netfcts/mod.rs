@@ -9,12 +9,12 @@ pub mod recstore;
 pub mod conrecord;
 
 
+use serde_derive::Deserialize;
 use std::collections::{HashMap, HashSet};
 
 use std::net::{Ipv4Addr};
 use std::process::Command;
 use std::sync::Arc;
-use std::mem;
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -65,7 +65,7 @@ pub struct RunConfiguration<T: Sized + Clone, TStore: SimpleStore + Clone> {
     pub flowdirector_map: HashMap<u16, Arc<FlowDirector>>,
     pub remote_sender: Sender<MessageFrom<TStore>>,
     pub local_sender: Sender<MessageTo<TStore>>,
-    /// do we run in interactive mode ?
+    /// do we run in interactive mode?
     pub b_interactive: bool,
 }
 
@@ -776,9 +776,9 @@ pub fn prepare_checksum_and_ttl(p: &mut Pdu) {
             }
             stack.tcp_mut(2).set_checksum(csum);
         }
-        p.set_l2_len(mem::size_of::<MacHeader>() as u64);
-        p.set_l3_len(mem::size_of::<IpHeader>() as u64);
-        p.set_l4_len(mem::size_of::<TcpHeader>() as u64);
+        p.set_l2_len(size_of::<MacHeader>() as u64);
+        p.set_l3_len(size_of::<IpHeader>() as u64);
+        p.set_l4_len(size_of::<TcpHeader>() as u64);
         debug!(
             "l234len = {}, {}, {}, ol_flags= 0x{:X}, validate= {}",
             p.l2_len(),

@@ -1,48 +1,25 @@
-extern crate ctrlc;
-extern crate e2d2;
-extern crate env_logger;
-extern crate ipnet;
-extern crate separator;
-extern crate bincode;
-extern crate rustyline;
-extern crate tcp_lib;
-extern crate clap;
-extern crate rand;
-#[macro_use]
-extern crate serde_derive;
-
-pub mod netfcts;
-
-// Logging
-#[macro_use]
-extern crate log;
-extern crate uuid;
-extern crate serde;
-
 use e2d2::interface::{Pdu, HeaderStack};
-
 use tcp_lib::netfcts::comm::{MessageFrom, PipelineId};
 use tcp_lib::netfcts::conrecord::ConRecord;
-#[cfg(feature = "profiling")]
-use tcp_lib::netfcts::io::print_rx_tx_counters;
-
 use tcp_lib::{Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg, install_pipelines_for_all_cores};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::Duration;
-
+use std::time::{Duration, Instant};
 use rustyline::Editor;
 use rustyline::error::ReadlineError;
 use clap::{Command, Arg, ArgAction};
-
-// Use shared analysis helpers moved to the library module
+use log::info;
 use tcp_lib::analysis::{evaluate_records, print_performance_from_stamps, collect_from_main_reply};
 use tcp_lib::netfcts::recstore::{Store64, Extension};
+use std::mem::size_of;
 
-// Removed local helper implementations; now provided by tcp_lib::analysis
-
-
+const STARTUP_DELAY_MS: u64 = 1000;
+const PRINT_DELAY_MS: u64 = 100;
+const SLEEP_CTRLC_LOOP_MS: u64 = 200;
+const REPLY_TIMEOUT_MS: u64 = 1000;
+const SHUTDOWN_POLL_MS: u64 = 100;
+const SHUTDOWN_MAX_WAIT_MS: u64 = 5000;
 pub fn main() {
     let (mut runtime, mode, running) = initialize_engine(false);
 
@@ -63,7 +40,7 @@ pub fn main() {
         }
         EngineMode::SimpleProxy => {
             install_pipelines_for_all_cores(&mut runtime, run_configuration_cloned, get_simple_tcp_proxy_nfg(None))
-                .expect("cannot install pipelines for DelayedProxy");
+                .expect("cannot install pipelines for SimpleProxy");
         }
     };
 
@@ -73,7 +50,8 @@ pub fn main() {
     runtime.start();
 
     // give threads some time to do initialization work
-    thread::sleep(Duration::from_millis(1000u64));
+
+    thread::sleep(Duration::from_millis(STARTUP_DELAY_MS));
 
     let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
     // start the engine by setting all tasks on scheduler threads to ready state
@@ -92,7 +70,7 @@ pub fn main() {
             .arg(
                 Arg::new("rxtx")
                     .long("rxtx")
-                    .help(" rxtx of pipeline components")
+                    .help("rxtx of pipeline components")
                     .action(ArgAction::SetTrue),
             );
         let cmd_quit = Command::new("quit");
@@ -117,11 +95,11 @@ pub fn main() {
                             if arg_matches.get_flag("performance") {
                                 // request performance data
                                 mtx.send(MessageFrom::PrintPerformance(cores.clone())).unwrap();
-                                thread::sleep(Duration::from_millis(100u64));
+                                thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
                             }
                             if arg_matches.get_flag("rxtx") {
                                 mtx.send(MessageFrom::PrintPerformance(cores.clone())).unwrap();
-                                thread::sleep(Duration::from_millis(100u64));
+                                thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
                             }
                         }
                         None => break,
@@ -149,13 +127,13 @@ pub fn main() {
     } else {
         println!("press ctrl-c to terminate TcpEngine ...");
         while running.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(200u64)); // Sleep for a bit
+            thread::sleep(Duration::from_millis(SLEEP_CTRLC_LOOP_MS)); // Sleep for a bit
         }
     }
 
     // request performance data
     mtx.send(MessageFrom::PrintPerformance(cores)).unwrap();
-    thread::sleep(Duration::from_millis(100u64));
+    thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
     // request counters
     mtx.send(MessageFrom::FetchCounter).unwrap();
     // request connection records
@@ -168,7 +146,7 @@ pub fn main() {
         mtx.send(MessageFrom::FetchCRecords).unwrap();
     }
 
-    let collected = collect_from_main_reply(&reply_mrx, 1000);
+    let collected = collect_from_main_reply(&reply_mrx, REPLY_TIMEOUT_MS);
     let start_stop_stamps: HashMap<PipelineId, (u64, u64)> = collected.start_stop_stamps;
     let mut con_records_s: Vec<(PipelineId, Store64<Extension>)> = Vec::with_capacity(64);
     let mut con_records_c: Vec<(PipelineId, Store64<Extension>)> = Vec::with_capacity(64);
@@ -208,9 +186,50 @@ pub fn main() {
         );
     }
 
-    // stop and exit all scheduler threads and finally the run_time thread
+    // Request graceful shutdown of all scheduler threads and the runtime thread
+    info!("Shutdown: requesting engine exit (MessageFrom::Exit)");
     mtx.send(MessageFrom::Exit).unwrap();
-
-    thread::sleep(Duration::from_millis(200u64)); // Sleep for a bit
-    std::process::exit(0);
+    // Drop our sender to help the runtime thread observe channel closure once done
+    drop(mtx);
+    info!("Shutdown: dropped main sender (mtx)");
+    // Drop our clone of run_configuration to release its Sender<MessageTo<_>> on main side
+    drop(run_configuration);
+    info!("Shutdown: dropped run_configuration (reply sender clone on main side released)");
+    // Also drop runtime to release the local sender clone held in run_configuration
+    drop(runtime);
+    info!("Shutdown: dropped runtime (remaining local sender clone released)");
+    // Wait bounded time for the runtime thread to terminate by observing the reply channel closing
+    info!(
+        "Shutdown: waiting up to {} ms for runtime thread to terminate ...",
+        SHUTDOWN_MAX_WAIT_MS
+    );
+    let start_wait = Instant::now();
+    let deadline = start_wait + Duration::from_millis(SHUTDOWN_MAX_WAIT_MS);
+    let mut terminated = false;
+    loop {
+        match reply_mrx.recv_timeout(Duration::from_millis(SHUTDOWN_POLL_MS)) {
+            // runtime thread has exited and dropped its senders
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                terminated = true;
+                info!(
+                    "Shutdown: runtime thread terminated; reply channel closed after {} ms",
+                    start_wait.elapsed().as_millis()
+                );
+                break;
+            }
+            // ignore any late messages while shutting down
+            Ok(_msg) => {}
+            // still waiting
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline { break; }
+            }
+        }
+    }
+    if !terminated {
+        info!(
+            "Shutdown: timeout reached ({} ms) while waiting for runtime termination; proceeding",
+            SHUTDOWN_MAX_WAIT_MS
+        );
+    }
+    // return from main after graceful shutdown
 }

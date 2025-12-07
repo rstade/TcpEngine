@@ -4,7 +4,7 @@ extern crate ipnet;
 extern crate bincode;
 
 use std::arch::x86_64::_rdtsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::thread;
 use std::net::{SocketAddr, SocketAddrV4, TcpStream, Shutdown, Ipv4Addr};
 use std::io::{Read, Write, BufWriter};
@@ -24,6 +24,16 @@ use crate::netfcts::comm::MessageFrom;
 use {crate::initialize_engine, crate::ReleaseCause};
 use {crate::TcpState, crate::TcpStatistics};
 use crate::analysis::collect_from_main_reply;
+
+
+// Centralized test timing constants
+const STARTUP_DELAY_MS: u64 = 1000;
+const SERVER_READY_DELAY_MS: u64 = 1000;
+const ENGINE_AFTER_START_DELAY_MS: u64 = 2000;
+const PRINT_DELAY_MS: u64 = 100;
+const REPLY_TIMEOUT_MS: u64 = 1000;
+const SHUTDOWN_POLL_MS: u64 = 100;
+const SHUTDOWN_MAX_WAIT_MS: u64 = 5000;
 
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -104,7 +114,7 @@ pub fn run_test(test_type: TestType) {
     runtime.start();
 
     // give threads some time to do initialization work
-    thread::sleep(Duration::from_millis(1000u64));
+    thread::sleep(Duration::from_millis(STARTUP_DELAY_MS));
 
     if test_type == TestType::Client {
         // set up local test servers (only when test-support is enabled)
@@ -123,16 +133,16 @@ pub fn run_test(test_type: TestType) {
             );
         }
 
-        thread::sleep(Duration::from_millis(1000u64)); // wait for the servers
+        thread::sleep(Duration::from_millis(SERVER_READY_DELAY_MS)); // wait for the servers
     }
     // start generator
 
     let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
     mtx.send(MessageFrom::StartEngine).unwrap();
-    thread::sleep(Duration::from_millis(2000u64));
+    thread::sleep(Duration::from_millis(ENGINE_AFTER_START_DELAY_MS));
 
     if test_type == TestType::Server {
-        let timeout = Duration::from_millis(1000u64);
+        let timeout = Duration::from_millis(REPLY_TIMEOUT_MS);
         for ntry in 0..run_configuration.engine_configuration.test_size.unwrap() as u16 {
             let target_socket;
             if rfs_mode == FlowSteeringMode::Port {
@@ -181,9 +191,9 @@ pub fn run_test(test_type: TestType) {
         }
     }
 
-    thread::sleep(Duration::from_millis(1000u64));
+    thread::sleep(Duration::from_millis(STARTUP_DELAY_MS));
     mtx.send(MessageFrom::PrintPerformance(cores)).unwrap();
-    thread::sleep(Duration::from_millis(100u64));
+    thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
 
 
     mtx.send(MessageFrom::FetchCounter).unwrap();
@@ -197,7 +207,7 @@ pub fn run_test(test_type: TestType) {
     }
 
 
-    let collected = collect_from_main_reply(&reply_mrx, 1000);
+    let collected = collect_from_main_reply(&reply_mrx, REPLY_TIMEOUT_MS);
     let tcp_counters_to = collected.tcp_counters_to;
     let tcp_counters_from = collected.tcp_counters_from;
     let con_records = collected.con_records;
@@ -320,9 +330,51 @@ pub fn run_test(test_type: TestType) {
             );
         }
     }
+    info!("Shutdown: requesting engine exit (MessageFrom::Exit)");
     mtx.send(MessageFrom::Exit).unwrap();
-    thread::sleep(Duration::from_millis(2000));
+    // Drop our sender to help the runtime thread observe channel closure once done
+    drop(mtx);
+    info!("Shutdown: dropped main sender (mtx)");
+    // Drop our clone of run_configuration to release its Sender<MessageTo<_>>
+    drop(run_configuration);
+    info!("Shutdown: dropped run_configuration (reply sender clone on main side released)");
+    // Also drop runtime to release the local sender clone held inside it
+    drop(runtime);
+    info!("Shutdown: dropped runtime (remaining local sender clone released)");
+    // Wait bounded time for the runtime thread to terminate by observing the reply channel closing
+    info!(
+        "Shutdown: waiting up to {} ms for runtime thread to terminate ...",
+        SHUTDOWN_MAX_WAIT_MS
+    );
+    let start_wait = Instant::now();
+    let deadline = start_wait + Duration::from_millis(SHUTDOWN_MAX_WAIT_MS);
+    let mut terminated = false;
+    loop {
+        match reply_mrx.recv_timeout(Duration::from_millis(SHUTDOWN_POLL_MS)) {
+            // runtime thread has exited and dropped its senders
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                terminated = true;
+                info!(
+                    "Shutdown: runtime thread terminated; reply channel closed after {} ms",
+                    start_wait.elapsed().as_millis()
+                );
+                break;
+            }
+            // ignore any late messages while shutting down
+            Ok(_msg) => {}
+            // still waiting
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline { break; }
+            }
+        }
+    }
+    if !terminated {
+        info!(
+            "Shutdown: timeout reached ({} ms) while waiting for runtime termination; proceeding",
+            SHUTDOWN_MAX_WAIT_MS
+        );
+    }
     println!("*** *** PASSED *** ***");
     debug!("terminating TcpEngine");
-    process::exit(0);
+    // return from run_test after graceful shutdown
 }

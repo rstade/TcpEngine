@@ -38,7 +38,9 @@ pub use netfcts::conrecord::ConRecord;
 pub use tcpmanager::{Connection};
 pub use proxymanager::ProxyConnection;
 
-use macaddr::MacAddr6 as MacAddress;
+use macaddr::MacAddr6;
+use serde::Deserialize as SerdeDeserialize;
+use std::str::FromStr;
 
 use e2d2::scheduler::*;
 use e2d2::interface::{PmdPort, Pdu, PciQueueType, KniQueueType};
@@ -169,11 +171,36 @@ impl EngineConfig {
     }
 }
 
+// Flexible deserializer: accept string form ("aa:bb:cc:dd:ee:ff") or [u8;6] array, or omit entirely
+fn deserialize_mac_opt<'de, D>(deserializer: D) -> Result<Option<MacAddr6>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(SerdeDeserialize)]
+    #[serde(untagged)]
+    enum MacRepr {
+        Str(String),
+        Bytes([u8; 6]),
+    }
+
+    let opt = Option::<MacRepr>::deserialize(deserializer)?;
+    let mac = match opt {
+        None => None,
+        Some(MacRepr::Str(s)) => {
+            let parsed = MacAddr6::from_str(&s).map_err(serde::de::Error::custom)?;
+            Some(parsed)
+        }
+        Some(MacRepr::Bytes(b)) => Some(MacAddr6::new(b[0], b[1], b[2], b[3], b[4], b[5])),
+    };
+    Ok(mac)
+}
+
 #[derive(Deserialize, Clone)]
 pub struct TargetConfig {
     pub id: String,
     pub ip: Ipv4Addr,
-    pub mac: Option<MacAddress>,
+    #[serde(default, deserialize_with = "deserialize_mac_opt")]
+    pub mac: Option<MacAddr6>,
     pub linux_if: Option<String>,
     pub port: u16,
 }
