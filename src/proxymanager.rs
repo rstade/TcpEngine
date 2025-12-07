@@ -466,7 +466,7 @@ impl ConnectionManager {
             debug!(
                 "rxq={}: tcp flow for socket ({},{}) created on {}:{:?}",
                 self.pci.rxq(),
-                sock.0,
+                Ipv4Addr::from(sock.0),
                 sock.1,
                 Ipv4Addr::from(self.ip),
                 port

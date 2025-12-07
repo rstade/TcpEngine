@@ -713,7 +713,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                     } else {
                         // server to client
                         {
-                            //debug!("looking up state for server side port { }", tcp.dst_port());
+                            debug!("looking up state for server side port { }", tcp.dst_port());
                             let mut c = cm.get_mut_by_port(tcp.dst_port());
                             #[cfg(feature = "profiling")]
                             time_adders[1].add_diff(unsafe { _rdtsc() } - timestamp_entry);
@@ -798,7 +798,7 @@ pub fn setup_delayed_proxy<F1, F2>(
                                         trace!("{} on proxy port {} transition to client/server state {:?}/{:?}", thread_id, c.port(), c.c_states(), c.s_states());
                                     }
                                 } else {
-                                    // debug!("received from server { } in c/s state {:?}/{:?} ", tcp, c.con_rec.c_state, c.con_rec.s_state);
+                                    debug!("received from server { } in c/s state {:?}/{:?} ", tcp, c.c_states(), c.s_states());
                                     b_unexpected = true; //  may still be revised, see below
                                 }
 

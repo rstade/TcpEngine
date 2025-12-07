@@ -102,6 +102,8 @@ fn delayed_binding_proxy() {
         configuration.engine.port,
     );
 
+    info!("proxy IP address: {}, port = {}", proxy_addr.0, proxy_addr.1);
+
     // start the run_time receive thread
     runtime.start();
 
