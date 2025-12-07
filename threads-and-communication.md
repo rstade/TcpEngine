@@ -10,6 +10,7 @@ This document illustrates the principal threads and message channels used by Tcp
 Legend:
 - Main → RunTime (`mtx: Sender<MessageFrom>`): sends control messages, including `StartEngine`, `PrintPerformance`, `FetchCounter`, `FetchCRecords`, and `Exit`.
 - RunTime → Main (`reply_mrx: Receiver<MessageTo>`): receives counters, connection records, and timestamps.
+- RunTime → Main exit notification (`exit_rx: Receiver<RuntimeExit>`): independent channel used to notify main when the runtime thread exits (normally or due to panic).
 - RunTime ↔ Schedulers: `SchedulerCommand` to start/stop tasks and request performance; `SchedulerReply::PerformanceData` back.
 - Pipelines register a per-pipeline `Sender<MessageTo>` via `MessageFrom::Channel`, enabling RunTime to broadcast fetch requests.
 
@@ -51,6 +52,9 @@ Legend:
          └───────── senders: HashMap<PipelineId, Sender<MessageTo>> ───▶|  - report counters,       |
                                                                         |    conn records, stamps   |
                                                                         +---------------------------+
+         ▲
+         │
+         └──────────── exit_rx: Receiver<RuntimeExit>  ◀────────── exit_tx (sent on normal exit or panic)
 ```
 
 
@@ -93,7 +97,7 @@ Legend:
 4. Shutdown (graceful in both `bin.rs` and `run_test.rs`):
     - Main sends `MessageFrom::Exit` over `mtx`.
     - Drops `mtx`, drops `run_configuration` (to release `Sender<MessageTo<_>>` clone), drops `runtime`.
-    - Waits until `reply_mrx` reports `Disconnected` (RunTime thread has exited and dropped its senders), with a bounded timeout.
+    - Waits until `reply_mrx` reports `Disconnected` OR `exit_rx` reports a result (RunTime thread exit), with a bounded timeout.
 
 #### Where things live in code
 - Thread spawn and RunTime loop: `src/netfcts/mod.rs` → `RunTime::start()`
@@ -109,7 +113,8 @@ Legend:
     - Orchestrates scheduler threads (start/stop, performance requests)
     - Relays data between pipelines and main
 - Pipelines/tasks execute within scheduler threads. They report back via the `remote_sender` and receive fetch requests via their per‑pipeline `Sender<MessageTo<TStore>>` registered with `MessageFrom::Channel`.
-- The channel disconnect that main waits for at shutdown only occurs after all `Sender<MessageTo<_>>` clones (including the one held in `run_configuration` on the main side) are dropped; hence the shutdown order in `bin.rs`/`run_test.rs`.
+- Early exit detection: main monitors `exit_rx` to immediately detect runtime termination (normal or panic), avoiding hangs.
+- The reply channel disconnect still depends on all `Sender<MessageTo<_>>` clones being dropped; the shutdown order ensures this.
 
 
 #### Shutdown sequence (as implemented)

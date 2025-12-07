@@ -13,13 +13,14 @@ use log::info;
 use tcp_lib::analysis::{evaluate_records, print_performance_from_stamps, collect_from_main_reply};
 use tcp_lib::netfcts::recstore::{Store64, Extension};
 use std::mem::size_of;
+use std::sync::mpsc::{TryRecvError, channel};
 
 const STARTUP_DELAY_MS: u64 = 1000;
 const PRINT_DELAY_MS: u64 = 100;
 const SLEEP_CTRLC_LOOP_MS: u64 = 200;
 const REPLY_TIMEOUT_MS: u64 = 1000;
 const SHUTDOWN_POLL_MS: u64 = 100;
-const SHUTDOWN_MAX_WAIT_MS: u64 = 5000;
+const SHUTDOWN_MAX_WAIT_MS: u64 = 1000;
 pub fn main() {
     let (mut runtime, mode, running) = initialize_engine(false);
 
@@ -53,10 +54,15 @@ pub fn main() {
 
     thread::sleep(Duration::from_millis(STARTUP_DELAY_MS));
 
+    // Get exit notification receiver to detect early runtime thread termination
+    let mut exit_rx = runtime.take_exit_receiver().expect("no exit receiver available");
+
     let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
     // start the engine by setting all tasks on scheduler threads to ready state
     mtx.send(MessageFrom::StartEngine).unwrap();
 
+    // flag to detect if runtime exited early so we can skip post-loop requests
+    let mut runtime_exited_early = false;
     //main loop
     if run_configuration.b_interactive {
         let cmd_print = Command::new("print")
@@ -75,13 +81,48 @@ pub fn main() {
             );
         let cmd_quit = Command::new("quit");
         let shim_cmd = Command::new(":").subcommand(cmd_print).subcommand(cmd_quit);
-        let mut rl = Editor::<()>::new().unwrap();
-        println!("enter commands or press ctrl-c to terminate TcpEngine ...");
-        loop {
-            let readline = rl.readline(">> ");
-            match readline {
-                Ok(line) => {
+        // Spawn a dedicated thread for blocking readline, communicate via channel
+        let (cmd_tx, cmd_rx) = channel::<Result<String, ReadlineError>>();
+        thread::spawn(move || {
+            let mut rl = Editor::<()>::new().unwrap();
+            println!("enter commands or press ctrl-c to terminate TcpEngine ...");
+            loop {
+                let res = rl.readline(">> ");
+                // keep some history if we got a line
+                if let Ok(ref line) = res {
                     rl.add_history_entry(line.as_str());
+                }
+                if cmd_tx.send(res).is_err() {
+                    // receiver dropped, exit thread
+                    break;
+                }
+            }
+        });
+
+        // Main interactive loop: poll for either runtime exit or user input
+        loop {
+            // Detect early runtime termination
+            match exit_rx.try_recv() {
+                Ok(tcp_lib::netfcts::RuntimeExit::Ok) => {
+                    info!("Runtime thread exited normally (early). Initiating shutdown.");
+                    runtime_exited_early = true;
+                    break;
+                }
+                Ok(tcp_lib::netfcts::RuntimeExit::Err(msg)) => {
+                    info!("Runtime thread exited with error: {}. Initiating shutdown.", msg);
+                    runtime_exited_early = true;
+                    break;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    info!("Runtime exit channel disconnected. Initiating shutdown.");
+                    runtime_exited_early = true;
+                    break;
+                }
+            }
+
+            match cmd_rx.try_recv() {
+                Ok(Ok(line)) => {
                     let shim_line = ": ".to_owned() + &line;
                     let matches = shim_cmd.clone().try_get_matches_from(shim_line.split_whitespace());
                     if let Err(err) = matches {
@@ -110,16 +151,24 @@ pub fn main() {
                         None => continue,
                     }
                 }
-                Err(ReadlineError::Interrupted) => {
+                Ok(Err(ReadlineError::Interrupted)) => {
                     println!("CTRL-C");
                     break;
                 }
-                Err(ReadlineError::Eof) => {
+                Ok(Err(ReadlineError::Eof)) => {
                     println!("CTRL-D");
                     break;
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     println!("Error: {:?}", err);
+                    break;
+                }
+                Err(TryRecvError::Empty) => {
+                    // nothing to do right now, avoid busy loop
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(TryRecvError::Disconnected) => {
+                    // input thread ended, just continue shutdown path
                     break;
                 }
             }
@@ -127,26 +176,52 @@ pub fn main() {
     } else {
         println!("press ctrl-c to terminate TcpEngine ...");
         while running.load(Ordering::SeqCst) {
+            // Detect early runtime termination
+            match exit_rx.try_recv() {
+                Ok(tcp_lib::netfcts::RuntimeExit::Ok) => {
+                    info!("Runtime thread exited normally (early). Initiating shutdown.");
+                    runtime_exited_early = true;
+                    break;
+                }
+                Ok(tcp_lib::netfcts::RuntimeExit::Err(msg)) => {
+                    info!("Runtime thread exited with error: {}. Initiating shutdown.", msg);
+                    runtime_exited_early = true;
+                    break;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    info!("Runtime exit channel disconnected. Initiating shutdown.");
+                    runtime_exited_early = true;
+                    break;
+                }
+            }
             thread::sleep(Duration::from_millis(SLEEP_CTRLC_LOOP_MS)); // Sleep for a bit
         }
     }
 
-    // request performance data
-    mtx.send(MessageFrom::PrintPerformance(cores)).unwrap();
-    thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
-    // request counters
-    mtx.send(MessageFrom::FetchCounter).unwrap();
-    // request connection records
-    if run_configuration
-        .engine_configuration
-        .engine
-        .detailed_records
-        .unwrap_or(false)
-    {
-        mtx.send(MessageFrom::FetchCRecords).unwrap();
+    if !runtime_exited_early {
+        // request performance data
+        mtx.send(MessageFrom::PrintPerformance(cores)).unwrap();
+        thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
+        // request counters
+        mtx.send(MessageFrom::FetchCounter).unwrap();
+        // request connection records
+        if run_configuration
+            .engine_configuration
+            .engine
+            .detailed_records
+            .unwrap_or(false)
+        {
+            mtx.send(MessageFrom::FetchCRecords).unwrap();
+        }
     }
 
-    let collected = collect_from_main_reply(&reply_mrx, REPLY_TIMEOUT_MS);
+    let collected = if !runtime_exited_early {
+        collect_from_main_reply(&reply_mrx, REPLY_TIMEOUT_MS)
+    } else {
+        // empty collected data if runtime already exited
+        tcp_lib::analysis::CollectedData::new()
+    };
     let start_stop_stamps: HashMap<PipelineId, (u64, u64)> = collected.start_stop_stamps;
     let mut con_records_s: Vec<(PipelineId, Store64<Extension>)> = Vec::with_capacity(64);
     let mut con_records_c: Vec<(PipelineId, Store64<Extension>)> = Vec::with_capacity(64);
@@ -188,13 +263,19 @@ pub fn main() {
 
     // Request graceful shutdown of all scheduler threads and the runtime thread
     info!("Shutdown: requesting engine exit (MessageFrom::Exit)");
-    mtx.send(MessageFrom::Exit).unwrap();
+    match mtx.send(MessageFrom::Exit) {
+        Ok(_) => {}
+        Err(e) => {
+            info!("Shutdown: could not send Exit to runtime (likely already exited): {}", e);
+        }
+    }
     // Drop our sender to help the runtime thread observe channel closure once done
     drop(mtx);
     info!("Shutdown: dropped main sender (mtx)");
     // Drop our clone of run_configuration to release its Sender<MessageTo<_>> on main side
     drop(run_configuration);
     info!("Shutdown: dropped run_configuration (reply sender clone on main side released)");
+    // Note: run_configuration_cloned was moved into install_pipelines_for_all_cores earlier.
     // Also drop runtime to release the local sender clone held in run_configuration
     drop(runtime);
     info!("Shutdown: dropped runtime (remaining local sender clone released)");
@@ -207,6 +288,25 @@ pub fn main() {
     let deadline = start_wait + Duration::from_millis(SHUTDOWN_MAX_WAIT_MS);
     let mut terminated = false;
     loop {
+        // observe exit channel first to react to early exit
+        match exit_rx.try_recv() {
+            Ok(tcp_lib::netfcts::RuntimeExit::Ok) => {
+                info!("Shutdown: runtime exit signal received (Ok)");
+                terminated = true;
+                break;
+            }
+            Ok(tcp_lib::netfcts::RuntimeExit::Err(msg)) => {
+                info!("Shutdown: runtime exit signal received with error: {}", msg);
+                terminated = true;
+                break;
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                info!("Shutdown: runtime exit channel disconnected");
+                terminated = true;
+                break;
+            }
+        }
         match reply_mrx.recv_timeout(Duration::from_millis(SHUTDOWN_POLL_MS)) {
             // runtime thread has exited and dropped its senders
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {

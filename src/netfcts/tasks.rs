@@ -6,6 +6,10 @@ use e2d2::queues::MpscProducer;
 use e2d2::scheduler::{Executable, Runnable, Scheduler, StandaloneScheduler};
 use uuid::Uuid;
 use crate::netfcts::tcp_common::L234Data;
+use log::{warn, error, info};
+use std::sync::mpsc::Sender;
+use crate::netfcts::comm::MessageFrom;
+use crate::netfcts::recstore::{Store64, Extension};
 
 #[derive(Debug)]
 pub enum TaskType {
@@ -33,6 +37,10 @@ pub struct PacketInjector {
     lastbatch_timestamp: u64,
     start_delay: u64,
     start_time: u64,
+    /// Optional notifier to request a graceful shutdown of the runtime on fatal errors
+    shutdown_tx: Option<Sender<MessageFrom<Store64<Extension>>>>,
+    /// Ensure we only trigger shutdown once
+    shutdown_requested: bool,
 }
 
 pub const PRIVATE_ETYPE_PACKET: u16 = 0x08FF;
@@ -89,11 +97,20 @@ impl<'a> PacketInjector {
             lastbatch_timestamp: 0,
             start_delay: 0,
             start_time: 0,
+            shutdown_tx: None,
+            shutdown_requested: false,
         }
     }
 
     pub fn set_start_delay(mut self, delay: u64) -> PacketInjector {
         self.start_delay = delay;
+        self
+    }
+
+    /// Provide a shutdown notifier (RunTime message sender) so the injector can
+    /// trigger a graceful program exit if a fatal condition occurs.
+    pub fn with_shutdown_tx(mut self, tx: Sender<MessageFrom<Store64<Extension>>>) -> PacketInjector {
+        self.shutdown_tx = Some(tx);
         self
     }
 
@@ -106,6 +123,11 @@ impl<'a> PacketInjector {
 
 impl<'a> Executable for PacketInjector {
     fn execute(&mut self) -> (u32, i32) {
+        // If a fatal error has already been observed and shutdown was requested,
+        // do nothing to avoid spamming logs or allocating again.
+        if self.shutdown_requested {
+            return (0, self.producer.used_slots() as i32);
+        }
         let now = unsafe { _rdtsc() };
         if self.start_time == 0 {
             self.start_time = now;
@@ -119,15 +141,42 @@ impl<'a> Executable for PacketInjector {
         {
             let mut mbuf_ptr_array = Vec::<*mut MBuf>::with_capacity(INJECTOR_BATCH_SIZE);
             let ret = unsafe { mbuf_alloc_bulk(mbuf_ptr_array.as_mut_ptr(), INJECTOR_BATCH_SIZE as u32) };
-            assert_eq!(ret, 0);
+            if ret != 0 {
+                // Allocation failed; treat as fatal and request graceful shutdown.
+                // Log only once, then suppress further attempts/logs to avoid flooding output.
+                if !self.shutdown_requested {
+                    error!(
+                        "PacketInjector: FATAL: mbuf_alloc_bulk failed (ret={}). Requesting graceful shutdown.",
+                        ret
+                    );
+                    if let Some(tx) = &self.shutdown_tx {
+                        // Best-effort: try to request exit; ignore errors if runtime is already down
+                        let _ = tx.send(MessageFrom::Exit);
+                        info!("PacketInjector: sent Exit to runtime due to fatal allocation failure");
+                    } else {
+                        error!("PacketInjector: no shutdown_tx available to request graceful exit");
+                    }
+                    self.shutdown_requested = true;
+                }
+                // Return without enqueuing anything; the scheduler will soon stop
+                return (0, self.producer.used_slots() as i32);
+            }
             unsafe { mbuf_ptr_array.set_len(INJECTOR_BATCH_SIZE) };
             for i in 0..INJECTOR_BATCH_SIZE {
                 self.create_packet_from_mbuf(mbuf_ptr_array[i]);
             }
             inserted = self.producer.enqueue_mbufs(&mbuf_ptr_array);
             self.sent_packets += inserted;
-            assert_eq!(inserted, INJECTOR_BATCH_SIZE);
-            self.lastbatch_timestamp = unsafe { _rdtsc() };
+            if inserted != INJECTOR_BATCH_SIZE {
+                warn!(
+                    "PacketInjector: enqueued {} of {} packets (queue full?), proceeding",
+                    inserted,
+                    INJECTOR_BATCH_SIZE
+                );
+            }
+            if inserted > 0 {
+                self.lastbatch_timestamp = unsafe { _rdtsc() };
+            }
         }
         (inserted as u32, self.producer.used_slots() as i32)
     }

@@ -69,6 +69,12 @@ pub struct RunConfiguration<T: Sized + Clone, TStore: SimpleStore + Clone> {
     pub b_interactive: bool,
 }
 
+#[derive(Debug, Clone)]
+pub enum RuntimeExit {
+    Ok,
+    Err(String),
+}
+
 pub struct RunTime<T: Sized + Clone + Send, TStore: SimpleStore + Clone> {
     pub run_configuration: RunConfiguration<T, TStore>,
     context: Option<NetBricksContext>,
@@ -79,6 +85,10 @@ pub struct RunTime<T: Sized + Clone + Send, TStore: SimpleStore + Clone> {
     /// see also get_main_channel()
     remote_receiver: Option<Receiver<MessageTo<TStore>>>,
     toml_file: String,
+    /// exit notification receiver: main/test can take this to learn when the runtime thread exits
+    exit_receiver: Option<Receiver<RuntimeExit>>, 
+    /// Join handle of the runtime thread for optional joining
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl<T: Sized + Clone + Send, TStore: 'static + SimpleStore + Clone> RunTime<T, TStore>
@@ -255,6 +265,8 @@ where
                 local_receiver: Some(local_receiver),
                 remote_receiver: Some(remote_receiver),
                 toml_file: toml_file.clone(),
+                exit_receiver: None,
+                handle: None,
             }),
             Err(e) => {
                 error!("Error: {}", e);
@@ -310,6 +322,11 @@ where
         } else {
             None
         }
+    }
+
+    /// Returns the exit notification receiver. Only the first call returns it.
+    pub fn take_exit_receiver(&mut self) -> Option<Receiver<RuntimeExit>> {
+        self.exit_receiver.take()
     }
 
     fn context_mut(&mut self) -> E2d2Result<&mut NetBricksContext> {
@@ -397,7 +414,12 @@ where
         let mrx = self.local_receiver.take().unwrap();
         let reply_to_main = self.run_configuration.local_sender.clone();
 
-        let _handle = thread::spawn(move || {
+        // create exit notification channel and keep receiver for main
+        let (exit_tx, exit_rx) = channel::<RuntimeExit>();
+        self.exit_receiver = Some(exit_rx);
+
+        let handle = thread::spawn(move || {
+            use std::panic::{catch_unwind, AssertUnwindSafe};
             let mut senders = HashMap::new();
             let mut tasks: Vec<Vec<(PipelineId, Uuid)>> = Vec::with_capacity(TaskType::NoTaskTypes as usize);
             for _t in 0..TaskType::NoTaskTypes as usize {
@@ -406,114 +428,188 @@ where
 
             // start execution of pipelines, but does not change task state of pipelines (e.g. sets them into ready state)
             // the latter happens with message StartEngine (see below)
-            context.execute_schedulers();
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                context.execute_schedulers();
+                setup_kernel_interfaces(&context);
 
-            setup_kernel_interfaces(&context);
-
-            // communicate with schedulers:
-
-            loop {
-                match mrx.recv_timeout(Duration::from_millis(10)) {
-                    Ok(MessageFrom::StartEngine) => {
-                        debug!("starting generator tasks");
-                        for s in &context.scheduler_channels {
-                            s.1.send(SchedulerCommand::SetTaskStateAll(true)).unwrap();
+                // communicate with schedulers:
+                loop {
+                    match mrx.recv_timeout(Duration::from_millis(10)) {
+                        Ok(MessageFrom::StartEngine) => {
+                            debug!("starting generator tasks");
+                            for s in &context.scheduler_channels {
+                                s.1.send(SchedulerCommand::SetTaskStateAll(true)).unwrap();
+                            }
                         }
-                    }
-                    Ok(MessageFrom::Channel(pipeline_id, sender)) => {
-                        debug!("got sender from {}", pipeline_id);
-                        senders.insert(pipeline_id, sender);
-                    }
-                    Ok(MessageFrom::PrintPerformance(indices)) => {
-                        for i in &indices {
-                            context
-                                .scheduler_channels
-                                .get(i)
-                                .unwrap()
-                                .send(SchedulerCommand::GetPerformance)
+                        Ok(MessageFrom::Channel(pipeline_id, sender)) => {
+                            debug!("got sender from {}", pipeline_id);
+                            senders.insert(pipeline_id, sender);
+                        }
+                        Ok(MessageFrom::PrintPerformance(indices)) => {
+                            for i in &indices {
+                                context
+                                    .scheduler_channels
+                                    .get(i)
+                                    .unwrap()
+                                    .send(SchedulerCommand::GetPerformance)
+                                    .unwrap();
+                                sleep(Duration::from_micros(200));
+                            }
+                        }
+                        Ok(MessageFrom::Exit) => {
+                            // stop all tasks on all schedulers
+                            for s in context.scheduler_channels.values() {
+                                s.send(SchedulerCommand::SetTaskStateAll(false)).unwrap();
+                            }
+
+                            print_hard_statistics(1u16);
+
+                            for port in context.ports.values() {
+                                println!("Port {}:{}", port.port_type(), port.port_id());
+                                port.print_soft_statistics();
+                            }
+                            info!("terminating RunTime ...");
+                            // drop all per-pipeline senders so the reply channel can close cleanly
+                            senders.clear();
+                            // Some error scenarios may already have torn down channels; protect stop() against panics
+                            if let Err(_p) = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                context.stop();
+                            })) {
+                                error!("context.stop() panicked during graceful exit; continuing shutdown");
+                            }
+                            break;
+                        }
+                        Ok(MessageFrom::Task(pipeline_id, uuid, task_type)) => {
+                            debug!("{}: task uuid= {}, type={:?}", pipeline_id, uuid, task_type);
+                            tasks[task_type as usize].push((pipeline_id, uuid));
+                        }
+                        Ok(MessageFrom::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter)) => {
+                            debug!("{}: received Counter", pipeline_id);
+                            reply_to_main
+                                .send(MessageTo::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter))
                                 .unwrap();
-                            sleep(Duration::from_micros(200));
+                        }
+                        Ok(MessageFrom::FetchCounter) => {
+                            for (_p, s) in &senders {
+                                s.send(MessageTo::FetchCounter).unwrap();
+                            }
+                        }
+                        Ok(MessageFrom::CRecords(pipeline_id, c_records_client, c_records_server)) => {
+                            reply_to_main
+                                .send(MessageTo::CRecords(pipeline_id, c_records_client, c_records_server))
+                                .unwrap();
+                        }
+                        Ok(MessageFrom::FetchCRecords) => {
+                            for (_p, s) in &senders {
+                                s.send(MessageTo::FetchCRecords).unwrap();
+                            }
+                        }
+                        Ok(MessageFrom::TimeStamps(p, t0, t1)) => {
+                            reply_to_main.send(MessageTo::TimeStamps(p, t0, t1)).unwrap();
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(e) => {
+                            error!("error receiving from MessageFrom channel: {}", e);
+                            // best-effort stop of all tasks and schedulers before exiting the runtime thread
+                            for s in context.scheduler_channels.values() {
+                                let _ = s.send(SchedulerCommand::SetTaskStateAll(false));
+                            }
+                            // drop all per-pipeline senders so the reply channel can close cleanly
+                            senders.clear();
+                            // Protect against panics if context is already partially torn down
+                            if let Err(_p) = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                context.stop();
+                            })) {
+                                error!("context.stop() panicked after MessageFrom error; continuing shutdown");
+                            }
+                            break;
+                        }
+                    };
+                    match context
+                        .reply_receiver
+                        .as_ref()
+                        .unwrap()
+                        .recv_timeout(Duration::from_millis(10))
+                    {
+                        Ok(SchedulerReply::PerformanceData(core, map)) => {
+                            let mut pairs = map.into_iter().collect::<Vec<_>>();
+                            pairs.sort_by(|a, b| a.1 .0.cmp(&b.1 .0));
+                            for (_, d) in pairs {
+                                println!(
+                                    "{:2}: {:20} {:>15} cycles, count= {:12}, queue length= {}",
+                                    core,
+                                    d.0,
+                                    d.1.separated_string(),
+                                    d.2.separated_string(),
+                                    d.3
+                                )
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(e) => {
+                            error!("error receiving from SchedulerReply channel: {}", e);
+                            // best-effort stop of all tasks and schedulers before exiting the runtime thread
+                            for s in context.scheduler_channels.values() {
+                                let _ = s.send(SchedulerCommand::SetTaskStateAll(false));
+                            }
+                            // drop all per-pipeline senders so the reply channel can close cleanly
+                            senders.clear();
+                            // Protect against panics if context is already partially torn down
+                            if let Err(_p) = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                context.stop();
+                            })) {
+                                error!("context.stop() panicked after SchedulerReply error; continuing shutdown");
+                            }
+                            break;
                         }
                     }
-                    Ok(MessageFrom::Exit) => {
-                        // stop all tasks on all schedulers
-                        for s in context.scheduler_channels.values() {
-                            s.send(SchedulerCommand::SetTaskStateAll(false)).unwrap();
-                        }
+                }
+                info!("exiting mrx recv thread of the RunTime ...");
+            }));
 
-                        print_hard_statistics(1u16);
-
-                        for port in context.ports.values() {
-                            println!("Port {}:{}", port.port_type(), port.port_id());
-                            port.print_soft_statistics();
-                        }
-                        info!("terminating RunTime ...");
-                        context.stop();
-                        break;
+            match result {
+                Ok(_) => {
+                    info!("RunTime: signaling RuntimeExit::Ok to main (exit_tx)");
+                    if let Err(e) = exit_tx.send(RuntimeExit::Ok) {
+                        error!("RunTime: failed to send RuntimeExit::Ok to main: {}", e);
                     }
-                    Ok(MessageFrom::Task(pipeline_id, uuid, task_type)) => {
-                        debug!("{}: task uuid= {}, type={:?}", pipeline_id, uuid, task_type);
-                        tasks[task_type as usize].push((pipeline_id, uuid));
-                    }
-                    Ok(MessageFrom::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter)) => {
-                        debug!("{}: received Counter", pipeline_id);
-                        reply_to_main
-                            .send(MessageTo::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter))
-                            .unwrap();
-                    }
-                    Ok(MessageFrom::FetchCounter) => {
-                        for (_p, s) in &senders {
-                            s.send(MessageTo::FetchCounter).unwrap();
-                        }
-                    }
-                    Ok(MessageFrom::CRecords(pipeline_id, c_records_client, c_records_server)) => {
-                        reply_to_main
-                            .send(MessageTo::CRecords(pipeline_id, c_records_client, c_records_server))
-                            .unwrap();
-                    }
-                    Ok(MessageFrom::FetchCRecords) => {
-                        for (_p, s) in &senders {
-                            s.send(MessageTo::FetchCRecords).unwrap();
-                        }
-                    }
-                    Ok(MessageFrom::TimeStamps(p, t0, t1)) => {
-                        reply_to_main.send(MessageTo::TimeStamps(p, t0, t1)).unwrap();
-                    }
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(e) => {
-                        error!("error receiving from MessageFrom channel: {}", e);
-                        break;
-                    } //m => warn!("unknown Result: {:?}", m),
-                };
-                match context
-                    .reply_receiver
-                    .as_ref()
-                    .unwrap()
-                    .recv_timeout(Duration::from_millis(10))
-                {
-                    Ok(SchedulerReply::PerformanceData(core, map)) => {
-                        let mut pairs = map.into_iter().collect::<Vec<_>>();
-                        pairs.sort_by(|a, b| a.1 .0.cmp(&b.1 .0));
-                        for (_, d) in pairs {
-                            println!(
-                                "{:2}: {:20} {:>15} cycles, count= {:12}, queue length= {}",
-                                core,
-                                d.0,
-                                d.1.separated_string(),
-                                d.2.separated_string(),
-                                d.3
-                            )
-                        }
-                    }
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(e) => {
-                        error!("error receiving from SchedulerReply channel: {}", e);
-                        break;
+                }
+                Err(payload) => {
+                    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "panic in runtime thread (non-string payload)".to_string()
+                    };
+                    info!("RunTime: signaling RuntimeExit::Err to main (exit_tx): {}", msg);
+                    if let Err(e) = exit_tx.send(RuntimeExit::Err(msg)) {
+                        error!("RunTime: failed to send RuntimeExit::Err to main: {}", e);
                     }
                 }
             }
-            info!("exiting recv thread ...");
         });
+
+        self.handle = Some(handle);
+    }
+
+    /// Join the runtime thread with a bounded timeout. Returns true if the thread
+    /// terminated within the timeout, false on timeout or if there is no handle.
+    pub fn join_with_timeout(&mut self, timeout_ms: u64) -> bool {
+        use std::time::Duration;
+        if let Some(handle) = self.handle.take() {
+            let (tx, rx) = channel::<()>();
+            thread::spawn(move || {
+                let _ = handle.join();
+                let _ = tx.send(());
+            });
+            match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
     }
 }
 

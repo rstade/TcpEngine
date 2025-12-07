@@ -206,6 +206,7 @@ pub fn setup_generator<FPL>(
             system_data.cpu_clock / engine_config.cps_limit() * 32,
             1u16,
         )
+        .with_shutdown_tx(tx.clone())
         .set_start_delay(system_data.cpu_clock / 100),
     );
     tx.send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::TcpGenerator))
@@ -224,6 +225,7 @@ pub fn setup_generator<FPL>(
             system_data.cpu_clock / engine_config.cps_limit() * 32,
             2u16,
         )
+        .with_shutdown_tx(tx.clone())
         .set_start_delay(system_data.cpu_clock / 100),
     );
     tx.send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::TcpGenerator))
