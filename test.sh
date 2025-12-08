@@ -39,7 +39,12 @@ build_and_run() {
   echo "$executable"
   echo "$toml_path" > tests/toml_file.txt
   # Preserve PATH and LD_LIBRARY_PATH explicitly when invoking via sudo
+  # Run the executable and propagate its exit code explicitly
+  set +e
   sudo -E env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "LD_PRELOAD=${LD_PRELOAD-}" "$executable" --nocapture
+  local rc=$?
+  set -e
+  return $rc
 }
 
 TASK=${1:-all}

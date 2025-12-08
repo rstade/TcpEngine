@@ -253,7 +253,6 @@ fn delayed_binding_proxy() {
 
     mtx.send(MessageFrom::Exit).unwrap();
     thread::sleep(Duration::from_millis(2000));
-
     info!("terminating ProxyEngine ...");
     println!("\nPASSED\n");
     std::process::exit(0);

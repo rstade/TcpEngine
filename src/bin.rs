@@ -55,7 +55,26 @@ pub fn main() {
     thread::sleep(Duration::from_millis(STARTUP_DELAY_MS));
 
     // Get exit notification receiver to detect early runtime thread termination
-    let mut exit_rx = runtime.take_exit_receiver().expect("no exit receiver available");
+    let exit_rx = runtime.take_exit_receiver().expect("no exit receiver available");
+
+    // Helper to detect early runtime termination uniformly (visible to both branches below)
+    fn runtime_exit_triggered(exit_rx: &std::sync::mpsc::Receiver<tcp_lib::netfcts::RuntimeExit>) -> bool {
+        match exit_rx.try_recv() {
+            Ok(tcp_lib::netfcts::RuntimeExit::Ok) => {
+                info!("Runtime thread exited normally (early). Initiating shutdown.");
+                true
+            }
+            Ok(tcp_lib::netfcts::RuntimeExit::Err(msg)) => {
+                info!("Runtime thread exited with error: {}. Initiating shutdown.", msg);
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+            Err(TryRecvError::Disconnected) => {
+                info!("Runtime exit channel disconnected. Initiating shutdown.");
+                true
+            }
+        }
+    }
 
     let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
     // start the engine by setting all tasks on scheduler threads to ready state
@@ -102,23 +121,9 @@ pub fn main() {
         // Main interactive loop: poll for either runtime exit or user input
         loop {
             // Detect early runtime termination
-            match exit_rx.try_recv() {
-                Ok(tcp_lib::netfcts::RuntimeExit::Ok) => {
-                    info!("Runtime thread exited normally (early). Initiating shutdown.");
-                    runtime_exited_early = true;
-                    break;
-                }
-                Ok(tcp_lib::netfcts::RuntimeExit::Err(msg)) => {
-                    info!("Runtime thread exited with error: {}. Initiating shutdown.", msg);
-                    runtime_exited_early = true;
-                    break;
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    info!("Runtime exit channel disconnected. Initiating shutdown.");
-                    runtime_exited_early = true;
-                    break;
-                }
+            if runtime_exit_triggered(&exit_rx) {
+                runtime_exited_early = true;
+                break;
             }
 
             match cmd_rx.try_recv() {
@@ -133,12 +138,8 @@ pub fn main() {
                     let sub_matches = matches.subcommand_matches("print");
                     match sub_matches {
                         Some(arg_matches) => {
-                            if arg_matches.get_flag("performance") {
-                                // request performance data
-                                mtx.send(MessageFrom::PrintPerformance(cores.clone())).unwrap();
-                                thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
-                            }
-                            if arg_matches.get_flag("rxtx") {
+                            // Both flags trigger the same request; send once if either is set
+                            if arg_matches.get_flag("performance") || arg_matches.get_flag("rxtx") {
                                 mtx.send(MessageFrom::PrintPerformance(cores.clone())).unwrap();
                                 thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
                             }
@@ -177,23 +178,9 @@ pub fn main() {
         println!("press ctrl-c to terminate TcpEngine ...");
         while running.load(Ordering::SeqCst) {
             // Detect early runtime termination
-            match exit_rx.try_recv() {
-                Ok(tcp_lib::netfcts::RuntimeExit::Ok) => {
-                    info!("Runtime thread exited normally (early). Initiating shutdown.");
-                    runtime_exited_early = true;
-                    break;
-                }
-                Ok(tcp_lib::netfcts::RuntimeExit::Err(msg)) => {
-                    info!("Runtime thread exited with error: {}. Initiating shutdown.", msg);
-                    runtime_exited_early = true;
-                    break;
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    info!("Runtime exit channel disconnected. Initiating shutdown.");
-                    runtime_exited_early = true;
-                    break;
-                }
+            if runtime_exit_triggered(&exit_rx) {
+                runtime_exited_early = true;
+                break;
             }
             thread::sleep(Duration::from_millis(SLEEP_CTRLC_LOOP_MS)); // Sleep for a bit
         }
