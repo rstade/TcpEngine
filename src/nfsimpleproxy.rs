@@ -1,41 +1,36 @@
 use e2d2::operators::{ReceiveBatch, Batch, merge_auto, SchedulingPolicy};
-use e2d2::scheduler::{Runnable, Scheduler, StandaloneScheduler};
+use e2d2::scheduler::StandaloneScheduler;
 use e2d2::allocators::CacheAligned;
 use e2d2::interface::*;
 use e2d2::queues::new_mpsc_queue_pair;
 
 #[cfg(feature = "profiling")]
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::channel;
-use std::convert::TryFrom;
 use std::arch::x86_64::_rdtsc;
 
 use uuid::Uuid;
 
-use crate::proxymanager::{ProxyConnection, ConnectionManager };
-use crate::netfcts::timer_wheel::TimerWheel;
+use crate::proxymanager::ConnectionManager;
 use crate::netfcts::tcp_common::*;
 use crate::netfcts::tasks;
 use crate::netfcts::tasks::private_etype;
 use crate::netfcts::{prepare_checksum_and_ttl, RunConfiguration};
 use crate::netfcts::set_header;
-use crate::netfcts::recstore::{Extension, ProxyRecStore, Store64};
-use crate::netfcts::comm::PipelineId;
+use crate::netfcts::recstore::{Extension, Store64};
 
 #[cfg(feature = "profiling")]
 use netfcts::utils::TimeAdder;
 
 use crate::Configuration;
+use crate::proxy_common::start_kni_forwarder;
 use crate::FnProxySelectServer;
 use crate::netfcts::comm::{ MessageFrom, MessageTo };
 use crate::netfcts::tasks::TaskType;
 
-use {crate::Timeouts, crate::FnProxyPayload};
-use crate::get_server_addresses;
+use {crate::FnProxyPayload};
+use crate::proxy_common::{make_context, ProxyContext, SimpleMode, client_to_server_common, server_to_client_common};
 
-const TIMER_WHEEL_RESOLUTION_MS: u64 = 10;
-const TIMER_WHEEL_SLOTS: usize = 1002;
-const TIMER_WHEEL_SLOT_CAPACITY: usize = 2500;
+// Timer wheel configuration and overflow guard are centralized in proxy_common
 
 /// This function actually defines the network function graph (NFG) for the application (tcp proxy) for
 /// a port (@pci) and its associated kernel network port (@kni) which the current core (@core) serves.
@@ -53,70 +48,23 @@ pub fn setup_simple_proxy<F1, F2>(
     F1: FnProxySelectServer,
     F2: FnProxyPayload,
 {
-    let l4flow_for_this_core = run_configuration
-        .flowdirector_map
-        .get(&pci.port_queue.port_id())
-        .unwrap()
-        .get_flow(pci.port_queue.rxq());
-
-    #[derive(Clone)]
-    struct Me {
-        // contains the client side ip address of the proxy
-        l234: L234Data,
-        // server side ip address of the proxy to use in this pipeline
-        ip_s: u32,
-    }
-
-    let mut me = Me {
-        l234: TryFrom::try_from(kni.port.net_spec().as_ref().unwrap().clone()).unwrap(),
-        ip_s: l4flow_for_this_core.ip,
-    };
-
-    me.l234.port = run_configuration.engine_configuration.engine.port;
-    let engine_config = &run_configuration.engine_configuration.engine;
-    let system_data = run_configuration.system_data.clone();
-
-    let servers: Vec<L234Data> = get_server_addresses(&run_configuration.engine_configuration);
-    let pipeline_id = PipelineId {
-        core: core as u16,
-        port_id: pci.port_queue.port_id() as u16,
-        rxq: pci.port_queue.rxq(),
-    };
+    // Build common proxy context and reuse across the setup
+    let ctx = make_context(core, &pci, &kni, sched, &run_configuration);
+    let system_data = ctx.system_data.clone();
+    let me = ctx.me.clone();
+    let servers: Vec<L234Data> = ctx.servers.clone();
+    let pipeline_id = ctx.pipeline_id.clone();
     debug!("enter setup_forwarder {}", pipeline_id);
     let tx = run_configuration.remote_sender.clone();
-    let detailed_records = engine_config.detailed_records.unwrap_or(false);
-    let mut cm: ConnectionManager = ConnectionManager::new(pci.port_queue.clone(), *l4flow_for_this_core, detailed_records);
+    let cm: ConnectionManager = ctx.cm;
+    let timeouts = ctx.timeouts;
+    let wheel = ctx.wheel;
 
-    let mut timeouts = Timeouts::default_or_some(&engine_config.timeouts);
-    let mut wheel = TimerWheel::new(
-        TIMER_WHEEL_SLOTS,
-        system_data.cpu_clock * TIMER_WHEEL_RESOLUTION_MS / 1000,
-        TIMER_WHEEL_SLOT_CAPACITY,
-    );
-
-    // check that we do not overflow the wheel:
-    if timeouts.established.is_some() {
-        let timeout = timeouts.established.unwrap();
-        if timeout > wheel.get_max_timeout_cycles() {
-            warn!(
-                "timeout defined in configuration file overflows timer wheel: reset to {} millis",
-                wheel.get_max_timeout_cycles() * 1000 / system_data.cpu_clock
-            );
-            timeouts.established = Some(wheel.get_max_timeout_cycles());
-        }
-    }
-
-    // setting up a a reverse message channel between this pipeline and the RunTime thread
-    debug!("{} setting up reverse channel", pipeline_id);
-    let (remote_tx, rx) = channel::<MessageTo<ProxyRecStore>>();
-    // we send the transmitter to the remote receiver of our messages
-    tx.send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
+    // reverse channel already created in context
+    let rx = ctx.rx_runtime;
 
     // forwarding frames coming from KNI to PCI
-    let forward2pci = ReceiveBatch::new(kni.clone()).send(pci.clone());
-    let uuid = Uuid::new_v4();
-    let name = String::from("Kni2Pci");
-    sched.add_runnable(Runnable::from_task(uuid, name, forward2pci).move_ready());
+    start_kni_forwarder(sched, &kni, &pci, "Kni2Pci");
 
     let thread_id = format!("<c{}, rx{}>: ", core, pci.port_queue.rxq());
     let tcp_min_port = cm.tcp_port_base();
@@ -182,88 +130,25 @@ pub fn setup_simple_proxy<F1, F2>(
         ];
     }
 
+    // Build context for shared handlers (do not rely on partially-moved ctx)
+    let mut ctx_shared = ProxyContext {
+        me: me.clone(),
+        servers: servers.clone(),
+        pipeline_id: pipeline_id.clone(),
+        system_data: system_data.clone(),
+        cm,
+        timeouts,
+        wheel,
+        rx_runtime: rx,
+    };
+
+    let mut mode = SimpleMode;
+
     let simple_proxy_closure =
         // this is the main closure containing the proxy service logic
         Box::new( move |pdu: &mut Pdu| {
 
-            fn client_to_server<F>(
-                p: &mut Pdu,
-                c: &mut ProxyConnection,
-                me: &Me,
-                servers: &Vec<L234Data>,
-                f_process_payload: F,
-            ) where
-                F: Fn(&mut ProxyConnection, &mut [u8], usize),
-            {
-                if tcp_payload_size(p) > 0 {
-                    let tailroom = p.get_tailroom();
-                    f_process_payload(c, p.get_payload_mut(2), tailroom);
-                }
-
-                let server = &servers[c.server_index()];
-                set_header(server, c.port(), p, &me.l234.mac, me.ip_s);
-
-                {
-                    let tcp = p.headers_mut().tcp_mut(2);
-                    // adapt ackn of client packet
-                    let oldackn = tcp.ack_num();
-                    let newackn = oldackn.wrapping_sub(c.c_seqn);
-                    let oldseqn = tcp.seq_num();
-                    let newseqn = if c.c2s_inserted_bytes >= 0 {
-                        oldseqn.wrapping_add(c.c2s_inserted_bytes as u32)
-                    } else {
-                        oldseqn.wrapping_sub((-c.c2s_inserted_bytes) as u32)
-                    };
-                    if c.c2s_inserted_bytes != 0 {
-                        tcp.set_seq_num(newseqn);
-                    }
-                    tcp.set_ack_num(newackn);
-                    c.ackn_p2s = newackn;
-                    if tcp.fin_flag() { c.seqn_fin_p2s = newseqn; }
-                }
-
-                prepare_checksum_and_ttl(p);
-            }
-
-            fn server_to_client(
-                p: &mut Pdu,
-                c: &mut ProxyConnection,
-                me: &Me,
-            ) {
-                let newseqn;
-                {
-                    // this is the s->c part of the stable two-way connection state
-                    // translate packets and forward to client
-                    let sock = c.sock().unwrap();
-                    let h = p.headers_mut();
-                    h.mac_mut(0).set_dmac(&c.client_mac);
-                    h.mac_mut(0).set_smac(&me.l234.mac);
-                    h.ip_mut(1).set_dst(sock.0);
-                    h.ip_mut(1).set_src(me.l234.ip);
-                    let tcp = h.tcp_mut(2);
-                    tcp.set_src_port(me.l234.port);
-                    tcp.set_dst_port(sock.1);
-
-                    // adapt seqn and ackn from server packet
-                    let oldseqn = tcp.seq_num();
-                    newseqn = oldseqn.wrapping_add(c.c_seqn);
-                    let oldackn = tcp.ack_num();
-                    let newackn = if c.c2s_inserted_bytes >= 0 {
-                        oldackn.wrapping_sub(c.c2s_inserted_bytes as u32)
-                    } else {
-                        oldackn.wrapping_add((-c.c2s_inserted_bytes) as u32)
-                    };
-                    if c.c2s_inserted_bytes != 0 {
-                        tcp.set_ack_num(newackn);
-                    }
-                    tcp.set_seq_num(newseqn);
-                    c.ackn_p2c = newackn;
-
-                }
-                if p.headers().tcp(2).fin_flag() { c.seqn.ack_for_fin_p2c = newseqn.wrapping_add(tcp_payload_size(p) as u32 + 1); }
-
-                prepare_checksum_and_ttl(p);
-            }
+            // use shared handlers via mode + ctx_shared
 
 
 
@@ -322,7 +207,7 @@ pub fn setup_simple_proxy<F1, F2>(
                 tasks::PRIVATE_ETYPE_PACKET => {}
                 tasks::PRIVATE_ETYPE_TIMER => {
                     ticks += 1;
-                    match rx.try_recv() {
+                    match ctx_shared.rx_runtime.try_recv() {
                         Ok(MessageTo::FetchCounter) => {
                             debug!("{}: received FetchCounter", pipeline_id_clone);
                             #[cfg(feature = "profiling")]
@@ -343,7 +228,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                 )).unwrap();
                         }
                         Ok(MessageTo::FetchCRecords) => {
-                            let c_recs = cm.fetch_c_records();
+                            let c_recs = ctx_shared.cm.fetch_c_records();
                             debug!("{}: received FetchCRecords, returning {} records", pipeline_id_clone, if c_recs.is_some() { c_recs.as_ref().unwrap().len() } else { 0 });
                             tx_clone
                                 .send(MessageFrom::CRecords(pipeline_id_clone.clone(), c_recs, None))
@@ -355,7 +240,7 @@ pub fn setup_simple_proxy<F1, F2>(
                     // debug!("ticks = {}", ticks);
                     if ticks % wheel_tick_reduction_factor == 0 {
                         let current_tsc = unsafe { _rdtsc() };
-                        cm.release_timeouts(&current_tsc, &mut wheel);
+                        ctx_shared.cm.release_timeouts(&current_tsc, &mut ctx_shared.wheel);
                     }
                     #[cfg(feature = "profiling")]
                     {   //save stats
@@ -376,12 +261,12 @@ pub fn setup_simple_proxy<F1, F2>(
                     if tcp.dst_port() == me.l234.port {
                         //trace!("client to server");
                         let opt_c = if tcp.syn_flag() {
-                            let c = cm.get_mut_or_insert(&src_sock);
+                            let c = ctx_shared.cm.get_mut_or_insert(&src_sock);
                             #[cfg(feature = "profiling")]
                             time_adders[0].add_diff(unsafe { _rdtsc() } - timestamp_entry);
                             c
                         } else {
-                            let c = cm.get_mut_by_sock(&src_sock);
+                            let c = ctx_shared.cm.get_mut_by_sock(&src_sock);
                             #[cfg(feature = "profiling")]
                             time_adders[8].add_diff(unsafe { _rdtsc() } - timestamp_entry);
                             c
@@ -418,7 +303,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                     counter_s[TcpStatistics::SentSyn] += 1;
                                     //counter_c[TcpStatistics::RecvPayload] += 1;
 
-                                    c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
+                                    c.wheel_slot_and_index = ctx_shared.wheel.schedule(&(ctx_shared.timeouts.established.unwrap() * ctx_shared.system_data.cpu_clock / 1000), c.port());
                                     group_index = 1;
                                 } else {
                                     warn!("received client SYN in state {:?}/{:?}, {:?}/{:?}, {}", old_c_state, old_s_state, c.c_states(), c.s_states(), tcp);
@@ -528,7 +413,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                 && old_c_state >= TcpState::Established {
                                 counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
                                 counter_s[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
-                                client_to_server(pdu, &mut c, &me, &servers, &f_process_payload_c_s);
+                                client_to_server_common(&mut mode, pdu, &mut c, &ctx_shared.me, &ctx_shared.servers, &f_process_payload_c_s, &f_select_server);
                                 group_index = 1;
                                 #[cfg(feature = "profiling")]
                                 time_adders[6].add_diff(unsafe { _rdtsc() } - timestamp_entry);
@@ -538,7 +423,7 @@ pub fn setup_simple_proxy<F1, F2>(
                         // server to client
                         {
                             //debug!("looking up state for server side port { }", tcp.dst_port());
-                            let mut c = cm.get_mut_by_port(tcp.dst_port());
+                            let mut c = ctx_shared.cm.get_mut_by_port(tcp.dst_port());
                             #[cfg(feature = "profiling")]
                             time_adders[1].add_diff(unsafe { _rdtsc() } - timestamp_entry);
 
@@ -554,7 +439,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                         // ****  valid SYN+ACK received from server
                                         debug!("{}  SYN-ACK received from server : L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
                                         // translate packet and forward to client
-                                        server_to_client(pdu, &mut c, &me);
+                                        server_to_client_common(&mut mode, pdu, &mut c, &ctx_shared.me);
                                         //counter_s[TcpStatistics::SentPayload] += 1;
                                         counter_c[TcpStatistics::SentSynAck] += 1;
                                         group_index = 1;
@@ -636,8 +521,8 @@ pub fn setup_simple_proxy<F1, F2>(
                                     && old_c_state >= TcpState::Established
                                     && old_c_state < TcpState::Closed {
                                     counter_s[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
-                                    // translate packets and forward to client
-                                    server_to_client(pdu, &mut c, &me);
+                                    // translate packets and forward to client via shared handler
+                                    server_to_client_common(&mut mode, pdu, &mut c, &ctx_shared.me);
                                     counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                     group_index = 1;
                                     b_unexpected = false;
@@ -669,7 +554,7 @@ pub fn setup_simple_proxy<F1, F2>(
             // required because of borrow checker for the state manager sm
             if let Some(sport) = release_connection {
                 trace!("releasing connection on port {}", sport);
-                cm.release_port(sport, &mut wheel);
+                ctx_shared.cm.release_port(sport, &mut ctx_shared.wheel);
             }
             group_index
         });

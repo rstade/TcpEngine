@@ -6,7 +6,7 @@ use e2d2::queues::{new_mpsc_queue_pair, new_mpsc_queue_pair_with_size};
 
 use std::sync::mpsc::channel;
 use std::sync::atomic::Ordering;
-use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::arch::x86_64::_rdtsc;
 
 use uuid::Uuid;
