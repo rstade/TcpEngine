@@ -18,9 +18,6 @@ use crate::netfcts::{prepare_checksum_and_ttl, RunConfiguration};
 use crate::netfcts::set_header;
 use crate::netfcts::recstore::{Extension, Store64};
 
-#[cfg(feature = "profiling")]
-use netfcts::utils::TimeAdder;
-
 use crate::Configuration;
 use crate::proxy_common::start_kni_forwarder;
 use crate::FnProxySelectServer;
@@ -28,6 +25,7 @@ use crate::netfcts::comm::{ MessageFrom, MessageTo };
 use crate::netfcts::tasks::TaskType;
 
 use {crate::FnProxyPayload};
+use crate::netfcts::utils::TimeAdder;
 use crate::proxy_common::{make_context, ProxyContext, SimpleMode, client_to_server_common, server_to_client_common};
 
 // Timer wheel configuration and overflow guard are centralized in proxy_common

@@ -19,13 +19,10 @@ use crate::netfcts::tasks::private_etype;
 use crate::netfcts::{prepare_checksum_and_ttl, RunConfiguration, make_reply_packet};
 use crate::netfcts::recstore::{Extension, Store64};
 
-#[cfg(feature = "profiling")]
-use netfcts::utils::TimeAdder;
-
 use crate::Configuration;
 use crate::netfcts::comm::{ MessageFrom, MessageTo };
 use crate::netfcts::tasks::TaskType;
-
+use crate::netfcts::utils::TimeAdder;
 use crate::proxy_common::{start_kni_forwarder, PduAllocator, make_context, DelayedMode, client_to_server_common, server_to_client_common, ProxyMode};
 
 // (removed unused MIN_FRAME_SIZE)

@@ -20,10 +20,10 @@ use crate::{get_server_addresses, Configuration};
 use crate::netfcts::tcp_common::{TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size};
 
 #[cfg(feature = "profiling")]
-use netfcts::utils::TimeAdder;
+//use crate::netfcts::utils::TimeAdder;
 use crate::netfcts::comm::{MessageFrom, MessageTo};
 use crate::netfcts::tasks::TaskType;
-use crate::netfcts::utils::Timeouts;
+use crate::netfcts::utils::{TimeAdder, Timeouts};
 use crate::netfcts::tasks::{PRIVATE_ETYPE_PACKET, PRIVATE_ETYPE_TIMER, ETYPE_IPV4};
 use crate::netfcts::tasks::{private_etype, PacketInjector, TickGenerator, install_task};
 use crate::netfcts::timer_wheel::TimerWheel;
@@ -265,6 +265,7 @@ pub fn setup_generator<FPL>(
     let uuid_l4groupby = Uuid::new_v4();
     let uuid_l4groupby_clone = uuid_l4groupby.clone();
     let pipeline_id_clone = pipeline_id.clone();
+    let nr_connections = run_configuration.engine_configuration.test_size.unwrap_or(128);
 
     #[cfg(feature = "profiling")]
     let sample_size = nr_connections as u64 / 2;
@@ -593,7 +594,6 @@ pub fn setup_generator<FPL>(
         let mut ready_connection = None;
         let server_listen_port = cm_c.listen_port();
 
-        let nr_connections = run_configuration.engine_configuration.test_size.unwrap_or(128);
         // check if we got a packet from generator
         match (pdu.headers().mac(0).etype(), pdu.headers().tcp(2).dst_port()) {
             // SYN injection

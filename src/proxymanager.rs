@@ -16,7 +16,7 @@ use crate::netfcts::recstore::{SimpleStore, Store64};
 use crate::netfcts::conrecord::HasTcpState;
 use crate::netfcts::utils::shuffle_ports;
 #[cfg(feature = "profiling")]
-use netfcts::utils::TimeAdder;
+use crate::netfcts::utils::TimeAdder;
 
 use macaddr::MacAddr6 as MacAddress;
 use crate::netfcts::recstore::ProxyRecStore;

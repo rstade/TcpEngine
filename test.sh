@@ -34,7 +34,7 @@ build_and_run() {
   filter="select((.profile.test == true) and (.target.name == \"${test_name}\")) | .filenames[]"
 
   local executable
-  executable=$(cargo test "$@" --no-run --message-format=json --features test-support --test "${test_name}" | jq -r "$filter")
+  executable=$(cargo test "$@" --no-run --message-format=json --features "test-support profiling" --test "${test_name}" | jq -r "$filter")
 
   echo "$executable"
   echo "$toml_path" > tests/toml_file.txt

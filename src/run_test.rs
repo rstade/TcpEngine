@@ -17,8 +17,6 @@ use e2d2::interface::{FlowSteeringMode};
 
 use separator::Separatable;
 use crate::netfcts::conrecord::HasTcpState;
-#[cfg(feature = "profiling")]
-use netfcts::io::print_rx_tx_counters;
 
 use {crate::get_tcp_generator_nfg, crate::install_pipelines_for_all_cores};
 use {crate::CData};

@@ -36,5 +36,6 @@ clap = ">=4.1"
 rand = ">=0.8"
 
 [features]
+default = ["profiling"]
 profiling =[]
 test-support = []
