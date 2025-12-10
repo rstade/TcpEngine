@@ -29,6 +29,7 @@ pub mod netfcts;
 pub mod nfsimpleproxy;
 pub mod runtime_install;
 pub mod proxy_common;
+pub mod profiling;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 

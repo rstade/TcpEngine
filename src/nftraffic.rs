@@ -23,7 +23,7 @@ use crate::netfcts::tcp_common::{TcpState, TcpStatistics, TcpCounter, TcpRole, C
 //use crate::netfcts::utils::TimeAdder;
 use crate::netfcts::comm::{MessageFrom, MessageTo};
 use crate::netfcts::tasks::TaskType;
-use crate::netfcts::utils::{TimeAdder, Timeouts};
+use crate::netfcts::utils::Timeouts;
 use crate::netfcts::tasks::{PRIVATE_ETYPE_PACKET, PRIVATE_ETYPE_TIMER, ETYPE_IPV4};
 use crate::netfcts::tasks::{private_etype, PacketInjector, TickGenerator, install_task};
 use crate::netfcts::timer_wheel::TimerWheel;
@@ -36,6 +36,7 @@ use crate::FnPayload;
 use std::convert::TryFrom;
 use crate::netfcts::comm::PipelineId;
 use crate::netfcts::recstore::{Extension, Store64};
+use crate::profiling::Profiler;
 
 
 const MIN_FRAME_SIZE: usize = 60;
@@ -189,8 +190,7 @@ pub fn setup_generator<FPL>(
 
     let mut hold = HoldingTime::new();
 
-    #[cfg(feature = "profiling")]
-    let mut rx_tx_stats = Vec::with_capacity(10000);
+    // centralized profiling state (initialized later once nr_connections is known)
 
     // we create SYN and Payload packets and merge them with the upstream coming from the pci i/f
     // the destination port of the created tcp packets is used as discriminator in the pipeline (dst_port 1 is for SYN packet generation)
@@ -268,22 +268,25 @@ pub fn setup_generator<FPL>(
     let nr_connections = run_configuration.engine_configuration.test_size.unwrap_or(128);
 
     #[cfg(feature = "profiling")]
-    let sample_size = nr_connections as u64 / 2;
-    #[cfg(feature = "profiling")]
-    let mut time_adders = [
-        TimeAdder::new("cmanager_c", sample_size * 2),
-        TimeAdder::new_with_warm_up("s_recv_syn", sample_size, 100),
-        TimeAdder::new("s_recv_syn_ack2", sample_size),
-        TimeAdder::new("s_recv_payload", sample_size),
-        TimeAdder::new("c_sent_syn", sample_size),
-        TimeAdder::new("c_sent_payload", sample_size),
-        TimeAdder::new("c_recv_syn_ack", sample_size),
-        TimeAdder::new("c_recv_fin", sample_size),
-        TimeAdder::new("s_recv_fin", sample_size),
-        TimeAdder::new("c_release_con", sample_size),
-        TimeAdder::new("s_release_con", sample_size),
-        TimeAdder::new("cmanager_s", sample_size),
-    ];
+    let mut profiler = {
+        let labels = [
+            "cmanager_c",        // 0
+            "s_recv_syn",        // 1
+            "s_recv_syn_ack2",   // 2
+            "s_recv_payload",    // 3
+            "c_sent_syn",        // 4
+            "c_sent_payload",    // 5
+            "c_recv_syn_ack",    // 6
+            "c_recv_fin",        // 7
+            "s_recv_fin",        // 8
+            "c_release_con",     // 9
+            "s_release_con",     //10
+            "cmanager_s",        //11
+        ];
+        // capacity heuristic based on test size
+        let cap = (nr_connections as usize).saturating_mul(2).min(20_000);
+        Profiler::new(&labels, cap, 100)
+    };
 
     let group_by_closure = Box::new(move |pdu: &mut Pdu| {
         // this is the major closure for TCP processing
@@ -523,7 +526,7 @@ pub fn setup_generator<FPL>(
         // *****  the closure starts here with processing
 
         #[cfg(feature = "profiling")]
-        let timestamp_entry = unsafe { _rdtsc() };
+        let timestamp_entry = profiler.start();
 
         let c_recv_payload = |p: &mut Pdu, c: &mut Connection| {
             let mut b_fin = false;
@@ -619,7 +622,7 @@ pub fn setup_generator<FPL>(
                                 wheel_c.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
                             group_index = 1;
                             #[cfg(feature = "profiling")]
-                            time_adders[4].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+                            profiler.add_diff(4, timestamp_entry);
                         }
                     }
                 } else {
@@ -682,7 +685,7 @@ pub fn setup_generator<FPL>(
                         group_index = 1;
                     }
                     #[cfg(feature = "profiling")]
-                    time_adders[5].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+                    profiler.add_diff(5, timestamp_entry);
                 } else {
                     if payload_injector_runs() {
                         payload_injector_stop();
@@ -700,14 +703,19 @@ pub fn setup_generator<FPL>(
                 match rx.try_recv() {
                     Ok(MessageTo::FetchCounter) => {
                         #[cfg(feature = "profiling")]
-                        tx_clone
-                            .send(MessageFrom::Counter(
-                                pipeline_id_clone.clone(),
-                                counter_c.clone(),
-                                counter_s.clone(),
-                                Some(rx_tx_stats.clone()),
-                            ))
-                            .unwrap();
+                        {
+                            let stats_opt: Option<Vec<(u64, usize, usize)>> = profiler
+                                .snapshot_rx_tx()
+                                .map(|v| v.iter().map(|(t, rx, tx)| (*t, *rx as usize, *tx as usize)).collect());
+                            tx_clone
+                                .send(MessageFrom::Counter(
+                                    pipeline_id_clone.clone(),
+                                    counter_c.clone(),
+                                    counter_s.clone(),
+                                    stats_opt,
+                                ))
+                                .unwrap();
+                        }
                         #[cfg(not(feature = "profiling"))]
                         tx_clone
                             .send(MessageFrom::Counter(
@@ -754,15 +762,9 @@ pub fn setup_generator<FPL>(
                 }
                 #[cfg(feature = "profiling")]
                 {
-                    let tx_stats_now = tx_stats.stats.load(Ordering::Relaxed);
-                    let rx_stats_now = rx_stats.stats.load(Ordering::Relaxed);
-                    // only save changes
-                    if rx_tx_stats.last().is_none()
-                        || tx_stats_now != rx_tx_stats.last().unwrap().2
-                        || rx_stats_now != rx_tx_stats.last().unwrap().1
-                    {
-                        rx_tx_stats.push((unsafe { _rdtsc() }, rx_stats_now, tx_stats_now));
-                    }
+                    let tx_stats_now = tx_stats.stats.load(Ordering::Relaxed) as u64;
+                    let rx_stats_now = rx_stats.stats.load(Ordering::Relaxed) as u64;
+                    profiler.record_rx_tx_if_changed(unsafe { _rdtsc() }, rx_stats_now, tx_stats_now);
                 }
             }
             (ETYPE_IPV4, dst_port) if dst_port == server_listen_port => {
@@ -777,7 +779,7 @@ pub fn setup_generator<FPL>(
                     counter_s[TcpStatistics::RecvSyn] += 1;
                     let c = cm_s.get_mut_or_insert(&src_sock);
                     #[cfg(feature = "profiling")]
-                    time_adders[11].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+                    profiler.add_diff(11, timestamp_entry);
                     c
                 } else {
                     cm_s.get_mut(&src_sock)
@@ -846,7 +848,7 @@ pub fn setup_generator<FPL>(
                                     counter_s[TcpStatistics::SentSynAck] += 1;
                                     group_index = 1;
                                     #[cfg(feature = "profiling")]
-                                    time_adders[1].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+                                    profiler.add_diff(1, timestamp_entry);
                                 } else {
                                     warn!("{} received SYN in state {:?}", thread_id, c.states());
                                 }
@@ -866,7 +868,7 @@ pub fn setup_generator<FPL>(
                                     group_index = 1;
                                 }
                                 #[cfg(feature = "profiling")]
-                                time_adders[8].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+                                profiler.add_diff(8, timestamp_entry);
                             } else if pdu.headers().tcp(2).rst_flag() {
                                 //trace!("server: received RST");
                                 counter_s[TcpStatistics::RecvRst] += 1;
@@ -881,7 +883,7 @@ pub fn setup_generator<FPL>(
                                         counter_s[TcpStatistics::RecvSynAck2] += 1;
                                         debug!("{} server: connection from DUT ({:?}) established", thread_id, src_sock);
                                         #[cfg(feature = "profiling")]
-                                        time_adders[2].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+                                        profiler.add_diff(2, timestamp_entry);
                                     }
                                     TcpState::LastAck => {
                                         // received final ack in passive close
@@ -924,7 +926,7 @@ pub fn setup_generator<FPL>(
                         }
 
                         #[cfg(feature = "profiling")]
-                        time_adders[3].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+                        profiler.add_diff(3, timestamp_entry);
                     }
                 }
             }
@@ -939,7 +941,7 @@ pub fn setup_generator<FPL>(
                 }
                 let c = cm_c.get_mut_by_port(client_port);
                 #[cfg(feature = "profiling")]
-                time_adders[0].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+                profiler.add_diff(0, timestamp_entry);
                 match c {
                     None => {
                         warn!(
@@ -1029,7 +1031,7 @@ pub fn setup_generator<FPL>(
                                     group_index = 1;
                                 }
                                 #[cfg(feature = "profiling")]
-                                time_adders[7].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+                                profiler.add_diff(7, timestamp_entry);
                             } else if pdu.headers().tcp(2).rst_flag() {
                                 counter_c[TcpStatistics::RecvRst] += 1;
                                 c.push_state(TcpState::Closed);
@@ -1113,19 +1115,19 @@ pub fn setup_generator<FPL>(
         if b_release_connection_s {
             cm_s.release(&src_sock, &mut wheel_s);
             #[cfg(feature = "profiling")]
-            time_adders[10].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+            profiler.add_diff(10, timestamp_entry);
         }
         if b_release_connection_c {
             debug!("releasing client connection on port {}", dst_sock.1);
             cm_c.release(dst_sock.1, &mut wheel_c);
             #[cfg(feature = "profiling")]
-            time_adders[9].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+            profiler.add_diff(9, timestamp_entry);
         }
         if let Some(sport) = ready_connection {
             //trace!("{} connection on port {} is ready", thread_id, sport);
             cm_c.set_ready_connection(sport, &payload_injector_ready_flag);
             #[cfg(feature = "profiling")]
-            time_adders[6].add_diff(unsafe { _rdtsc() } - timestamp_entry);
+            profiler.add_diff(6, timestamp_entry);
         }
         group_index
     });
