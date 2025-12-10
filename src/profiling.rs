@@ -60,10 +60,12 @@ impl Profiler {
         }
     }
 
+    #[inline]
     pub fn snapshot_rx_tx(&self) -> Option<&Vec<(u64, u64, u64)>> {
         Some(&self.rx_tx_stats)
     }
 
+    #[inline]
     pub fn into_rx_tx(self) -> Option<Vec<(u64, u64, u64)>> {
         Some(self.rx_tx_stats)
     }

@@ -1,6 +1,7 @@
 use crate::Timeouts;
 use crate::netfcts::timer_wheel::TimerWheel;
 use crate::netfcts::tcp_common::L234Data;
+use crate::netfcts::tcp_common::{TcpState, TcpStatistics, ReleaseCause, TcpCounter};
 use crate::netfcts::recstore::{Extension, ProxyRecStore, Store64};
 use crate::netfcts::comm::{MessageFrom, MessageTo, PipelineId};
 use crate::netfcts::RunConfiguration;
@@ -14,19 +15,213 @@ use e2d2::interface::{PortQueue, PortQueueTxBuffered};
 use e2d2::operators::{ReceiveBatch, Batch};
 use e2d2::scheduler::{Runnable, StandaloneScheduler, Scheduler};
 use uuid::Uuid;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use e2d2::interface::Pdu;
+use e2d2::headers::TcpHeader;
 use crate::netfcts::{prepare_checksum_and_ttl, set_header};
 use crate::netfcts::tcp_common::tcp_payload_size;
 use crate::netfcts::{remove_tcp_options, make_reply_packet};
 use std::arch::x86_64::_rdtsc;
 use e2d2::queues::MpscProducer;
 use e2d2::headers::Header;
+use crate::profiling::Profiler; // only for label shape; no runtime dependency
+use crate::netfcts::tasks::private_etype;
 
 // Shared timer wheel configuration for proxy pipelines
 pub const TIMER_WHEEL_RESOLUTION_MS: u64 = 10;
 pub const TIMER_WHEEL_SLOTS: usize = 1002;
 pub const TIMER_WHEEL_SLOT_CAPACITY: usize = 2500;
+
+// Centralized profiler labels used by both proxy variants
+pub const PROXY_PROF_LABELS: &[&str] = &[
+    "c_cmanager_syn",   // 0
+    "s_cmanager",       // 1
+    "c_recv_syn",       // 2
+    "s_recv_syn_ack",   // 3
+    "c_recv_syn_ack2",  // 4
+    "c_recv_1_payload", // 5
+    "c2s_stable",       // 6
+    "s2c_stable",       // 7
+    "c_cmanager_not_syn", // 8
+    "",                 // 9 (reserved)
+    "",                 // 10 (reserved)
+    "",                 // 11 (reserved)
+];
+
+// ========================= Ingress helpers (shared) =========================
+
+pub enum IngressDecision {
+    Drop,                      // discard (group 0)
+    ToKni,                     // send to KNI (group 2)
+    Continue { b_private_etype: bool },
+}
+
+/// Classify ingress frame based on L2/L3 rules common to both proxies.
+/// Mirrors the existing logic in both engines.
+pub fn ingress_classify(pdu: &Pdu, me: &Me, pipeline_ip: u32) -> IngressDecision {
+    // L2
+    let mac = pdu.headers().mac(0);
+    let b_private = private_etype(&mac.etype());
+    if !b_private {
+        if mac.dst != me.l234.mac && !mac.dst.is_multicast() && !mac.dst.is_broadcast() {
+            return IngressDecision::Drop;
+        }
+        if mac.etype() != 0x0800 {
+            return IngressDecision::ToKni;
+        }
+    }
+    // L3
+    let ip = pdu.headers().ip(1);
+    if !b_private {
+        if ip.protocol() != 6 || (ip.dst() != pipeline_ip && ip.dst() != me.l234.ip) {
+            return IngressDecision::ToKni;
+        }
+    }
+    IngressDecision::Continue { b_private_etype: b_private }
+}
+
+#[inline]
+pub fn maybe_enable_tx_offload(pdu: &mut Pdu, csum_offload: bool) {
+    if csum_offload {
+        pdu.set_tcp_ipv4_checksum_tx_offload();
+    }
+}
+
+/// Unified TCP port filter used by both proxies. Returns true if packet passes.
+#[inline]
+pub fn pass_tcp_port_filter(pdu: &Pdu, me: &Me, tcp_min_port: u16, b_private_etype: bool) -> bool {
+    if b_private_etype { return true; }
+    let dst = pdu.headers().tcp(2).dst_port();
+    if dst != me.l234.port && dst < tcp_min_port { return false; }
+    true
+}
+
+/// Handle PRIVATE_ETYPE_TIMER frames: runtime requests, timeouts, and optional profiling RX/TX sampling.
+/// This consolidates identical logic across both proxy variants.
+pub fn handle_timer_tick(
+    ticks: &mut u64,
+    wheel_tick_reduction_factor: u64,
+    cm: &mut ConnectionManager,
+    wheel: &mut TimerWheel<u16>,
+    rx_runtime: &Receiver<MessageTo<ProxyRecStore>>,
+    tx_runtime: &Sender<MessageFrom<Store64<Extension>>>,
+    pipeline_id: &PipelineId,
+    counter_c: &TcpCounter,
+    counter_s: &TcpCounter,
+    mut profiler: Option<&mut Profiler>,
+    rx_stats_now: Option<u64>,
+    tx_stats_now: Option<u64>,
+) {
+    *ticks += 1;
+    match rx_runtime.try_recv() {
+        Ok(MessageTo::FetchCounter) => {
+            debug!("{}: received FetchCounter", pipeline_id);
+            let stats_opt: Option<Vec<(u64, usize, usize)>> = profiler
+                .as_ref()
+                .and_then(|p| p.snapshot_rx_tx())
+                .map(|v| v.iter().map(|(t, rx, tx)| (*t, *rx as usize, *tx as usize)).collect());
+            tx_runtime
+                .send(MessageFrom::Counter(
+                    pipeline_id.clone(),
+                    counter_c.clone(),
+                    counter_s.clone(),
+                    stats_opt,
+                ))
+                .unwrap();
+        }
+        Ok(MessageTo::FetchCRecords) => {
+            let c_recs = cm.fetch_c_records();
+            debug!(
+                "{}: received FetchCRecords, returning {} records",
+                pipeline_id,
+                if c_recs.is_some() { c_recs.as_ref().unwrap().len() } else { 0 }
+            );
+            tx_runtime
+                .send(MessageFrom::CRecords(pipeline_id.clone(), c_recs, None))
+                .unwrap();
+        }
+        _ => {}
+    }
+
+    // check for timeouts
+    if *ticks % wheel_tick_reduction_factor == 0 {
+        let current_tsc = unsafe { _rdtsc() };
+        cm.release_timeouts(&current_tsc, wheel);
+    }
+
+    // Optional RX/TX profiling sample
+    if let (Some(p), Some(rx), Some(tx)) = (profiler.as_deref_mut(), rx_stats_now, tx_stats_now) {
+        p.record_rx_tx_if_changed(unsafe { _rdtsc() }, rx, tx);
+    }
+}
+
+/// Common epilogue: release connection state if a port was marked for release.
+/// Resets the `release_port` option after releasing to avoid double-free on re-entry.
+#[inline]
+pub fn release_if_needed(
+    cm: &mut ConnectionManager,
+    wheel: &mut TimerWheel<u16>,
+    release_port: &mut Option<u16>,
+) {
+    if let Some(sport) = *release_port {
+        trace!("releasing connection on port {}", sport);
+        cm.release_port(sport, wheel);
+        *release_port = None;
+    }
+}
+
+/// Wrapper for established client->server forwarding: updates counters, calls shared handler, and profiles.
+pub fn forward_established_c2s<M, FP, FSel>(
+    mode: &mut M,
+    p: &mut Pdu,
+    c: &mut ProxyConnection,
+    me: &Me,
+    servers: &Vec<L234Data>,
+    f_process_payload_c_s: &FP,
+    f_select_server: &FSel,
+    counter_c: &mut TcpCounter,
+    counter_s: &mut TcpCounter,
+    profiler: Option<&mut Profiler>,
+    profile_label_idx: Option<usize>,
+    timestamp_entry: Option<u64>,
+) where
+    M: ProxyMode,
+    FP: FnProxyPayload,
+    FSel: FnProxySelectServer,
+{
+    let sz = tcp_payload_size(p);
+    counter_c[TcpStatistics::RecvPayload] += sz;
+    counter_s[TcpStatistics::SentPayload] += sz;
+    client_to_server_common(mode, p, c, me, servers, f_process_payload_c_s, f_select_server);
+    #[cfg(feature = "profiling")]
+    if let (Some(prof), Some(idx), Some(ts)) = (profiler, profile_label_idx, timestamp_entry) {
+        prof.add_diff(idx, ts);
+    }
+}
+
+/// Wrapper for established server->client forwarding: updates counters, calls shared handler, and profiles.
+pub fn forward_established_s2c<M>(
+    mode: &mut M,
+    p: &mut Pdu,
+    c: &mut ProxyConnection,
+    me: &Me,
+    counter_c: &mut TcpCounter,
+    counter_s: &mut TcpCounter,
+    profiler: Option<&mut Profiler>,
+    profile_label_idx: Option<usize>,
+    timestamp_entry: Option<u64>,
+) where
+    M: ProxyMode,
+{
+    let sz = tcp_payload_size(p);
+    counter_s[TcpStatistics::RecvPayload] += sz;
+    server_to_client_common(mode, p, c, me);
+    counter_c[TcpStatistics::SentPayload] += tcp_payload_size(p);
+    #[cfg(feature = "profiling")]
+    if let (Some(prof), Some(idx), Some(ts)) = (profiler, profile_label_idx, timestamp_entry) {
+        prof.add_diff(idx, ts);
+    }
+}
 
 /// Builds a `TimerWheel` using the shared configuration and clamps `timeouts.established`
 /// to the maximum supported duration of the wheel (in cycles) if necessary.
@@ -270,7 +465,7 @@ impl ProxyMode for DelayedMode {
             c.c2s_inserted_bytes = tcp_payload_size(c.payload_packet.as_ref().unwrap()) as i32 - payload_sz as i32;
 
             // Set the header for the selected server in the payload packet p
-            let server = &servers[c.server_index() as usize];
+            let server = &servers[c.server_index() ];
             set_header(server, c.port(), p, &me.l234.mac, me.ip_s);
 
             // Prepare SYN packet by pushing MAC header of p into syn, then swap p to point to syn
@@ -372,12 +567,12 @@ pub fn client_to_server_common<M, FP, FSel>(
     }
 
     // Ensure server selected (simple mode selects immediately, others may defer)
-    if c.server_index() as usize >= servers.len() {
+    if c.server_index() >= servers.len() {
         mode.select_server(p, c, me, servers, f_select_server);
     }
 
     // Rewriting headers client->server
-    let server = &servers[c.server_index() as usize];
+    let server = &servers[c.server_index()];
     set_header(server, c.port(), p, &me.l234.mac, me.ip_s);
 
     {
@@ -441,6 +636,81 @@ pub fn server_to_client_common<M>(
     if p.headers().tcp(2).fin_flag() { c.seqn.ack_for_fin_p2c = newseqn.wrapping_add(tcp_payload_size(p) as u32 + 1); }
 
     prepare_checksum_and_ttl(p);
+}
+
+/// Handle server-side FIN/ACK-for-FIN and related close semantics common to both proxies.
+/// Returns true if the packet was handled by this function; false if not (caller may treat as unexpected).
+pub fn handle_server_close_and_fin_acks(
+    tcp: &TcpHeader,
+    c: &mut ProxyConnection,
+    old_c_state: TcpState,
+    old_s_state: TcpState,
+    counter_c: &mut TcpCounter,
+    counter_s: &mut TcpCounter,
+    thread_id: &str,
+) -> bool {
+    if tcp.fin_flag() {
+        if old_c_state >= TcpState::FinWait1 {
+            if tcp.ack_flag() && tcp.ack_num() == c.seqn_fin_p2s.wrapping_add(1) {
+                counter_s[TcpStatistics::RecvFinPssv] += 1;
+                counter_c[TcpStatistics::SentFinPssv] += 1;
+                counter_s[TcpStatistics::RecvAck4Fin] += 1;
+                counter_c[TcpStatistics::SentAck4Fin] += 1;
+                trace!("{} received FIN-reply from server on proxy port {}", thread_id, tcp.dst_port());
+                c.s_set_release_cause(ReleaseCause::PassiveClose);
+                c.s_push_state(TcpState::LastAck);
+            } else {
+                trace!("simultaneous active close from server on port {}", tcp.dst_port());
+                counter_s[TcpStatistics::RecvFin] += 1;
+                counter_c[TcpStatistics::SentFin] += 1;
+                c.s_set_release_cause(ReleaseCause::ActiveClose);
+                c.s_push_state(TcpState::Closing);
+                if old_c_state == TcpState::FinWait1 {
+                    c.c_push_state(TcpState::Closing);
+                } else if old_c_state == TcpState::FinWait2 {
+                    c.c_push_state(TcpState::Closed)
+                }
+            }
+        } else {
+            // server initiated TCP close
+            trace!(
+                "{} server closes connection on port {}/{} in state {:?}",
+                thread_id,
+                tcp.dst_port(),
+                c.sock().unwrap().1,
+                c.s_states(),
+            );
+            c.s_push_state(TcpState::FinWait1);
+            c.s_set_release_cause(ReleaseCause::ActiveClose);
+            counter_s[TcpStatistics::RecvFin] += 1;
+            counter_c[TcpStatistics::SentFin] += 1;
+        }
+        return true;
+    } else if old_c_state >= TcpState::LastAck && tcp.ack_flag() {
+        if tcp.ack_num() == c.seqn_fin_p2s.wrapping_add(1) {
+            // received Ack from server for a FIN
+            match old_c_state {
+                TcpState::LastAck => {
+                    c.c_push_state(TcpState::Closed);
+                    c.s_push_state(TcpState::Closed);
+                }
+                TcpState::FinWait1 => { c.c_push_state(TcpState::FinWait2) }
+                TcpState::Closing => {
+                    c.c_push_state(TcpState::Closed);
+                }
+                _ => {}
+            }
+            match old_s_state {
+                TcpState::FinWait1 => {}
+                _ => {}
+            }
+            counter_s[TcpStatistics::RecvAck4Fin] += 1;
+            counter_c[TcpStatistics::SentAck4Fin] += 1;
+            trace!("{} on proxy port {} transition to client/server state {:?}/{:?}", thread_id, c.port(), c.c_states(), c.s_states());
+            return true;
+        }
+    }
+    false
 }
 
 // Shared proxy infrastructure for simple and delayed TCP proxies.

@@ -8,21 +8,24 @@ use e2d2::queues::new_mpsc_queue_pair;
 
 #[cfg(feature = "profiling")]
 use std::sync::atomic::Ordering;
-use std::arch::x86_64::_rdtsc;
 
 use uuid::Uuid;
 
 use crate::proxymanager::ConnectionManager;
 use crate::netfcts::tcp_common::*;
 use crate::netfcts::tasks;
-use crate::netfcts::tasks::private_etype;
 use crate::netfcts::{prepare_checksum_and_ttl, RunConfiguration, make_reply_packet};
 use crate::netfcts::recstore::{Extension, Store64};
 
 use crate::Configuration;
-use crate::netfcts::comm::{ MessageFrom, MessageTo };
+use crate::netfcts::comm::{ MessageFrom };
 use crate::netfcts::tasks::TaskType;
-use crate::proxy_common::{start_kni_forwarder, PduAllocator, make_context, DelayedMode, client_to_server_common, server_to_client_common, ProxyMode};
+use crate::proxy_common::{
+    start_kni_forwarder, PduAllocator, make_context, DelayedMode,
+    ProxyMode, handle_server_close_and_fin_acks,
+    PROXY_PROF_LABELS, IngressDecision, ingress_classify, maybe_enable_tx_offload, pass_tcp_port_filter,
+    handle_timer_tick, forward_established_c2s, forward_established_s2c, release_if_needed,
+};
 use crate::profiling::Profiler;
 
 // (removed unused MIN_FRAME_SIZE)
@@ -78,21 +81,7 @@ pub fn setup_delayed_proxy<F1, F2>(
     let mut counter_s = TcpCounter::new();
     #[cfg(feature = "profiling")]
     let mut profiler = {
-        let labels = [
-            "c_cmanager_syn",
-            "s_cmanager",
-            "c_recv_syn",
-            "s_recv_syn_ack",
-            "c_recv_syn_ack2",
-            "c_recv_1_payload",
-            "c2s_stable",
-            "s2c_stable",
-            "c_cmanager_not_syn",
-            "",
-            "",
-            "",
-        ];
-        Profiler::new(&labels, 10_000, 100)
+        Profiler::new(PROXY_PROF_LABELS, 10_000, 100)
     };
 
     // set up the generator producing timer tick packets with our private EtherType
@@ -146,40 +135,18 @@ pub fn setup_delayed_proxy<F1, F2>(
             #[cfg(feature = "profiling")]
             let timestamp_entry = profiler.start();
 
-            let b_private_etype;
-            {
-                let mac_header = pdu.headers().mac(0);
-                b_private_etype = private_etype(&mac_header.etype());
-                if !b_private_etype {
-                    if mac_header.dst != me.l234.mac && !mac_header.dst.is_multicast() && !mac_header.dst.is_broadcast() {
-                        debug!("{} from pci: discarding because mac unknown: {} ", thread_id, mac_header);
-                        return 0;
-                    }
-                    if mac_header.etype() != 0x0800 && !b_private_etype {
-                        // everything other than Ipv4 or our own packets we send to KNI, i.e. group 2
-                        return 2;
-                    }
-                }
-            }
+            let b_private_etype = match ingress_classify(pdu, &me, pipeline_ip) {
+                IngressDecision::Drop => return 0,
+                IngressDecision::ToKni => return 2,
+                IngressDecision::Continue { b_private_etype } => b_private_etype,
+            };
 
-            {
-                let ip_header = pdu.headers().ip(1);
-                if !b_private_etype {
-                    // everything other than TCP, and everything not addressed to us we send to KNI, i.e. group 2
-                    if ip_header.protocol() != 6 || ip_header.dst() != pipeline_ip && ip_header.dst() != me.l234.ip {
-                        return 2;
-                    }
-                }
-            }
-
-            if csum_offload {
-                pdu.set_tcp_ipv4_checksum_tx_offload();
-            }
+            maybe_enable_tx_offload(pdu, csum_offload);
             let mut group_index = 0usize; // the index of the group to be returned, default 0: dump packet
 
 
             //check ports
-            if !b_private_etype && pdu.headers().tcp(2).dst_port() != me_clone.l234.port && pdu.headers().tcp(2).dst_port() < tcp_min_port {
+            if !pass_tcp_port_filter(pdu, &me_clone, tcp_min_port, b_private_etype) {
                 return 2;
             }
 
@@ -195,54 +162,35 @@ pub fn setup_delayed_proxy<F1, F2>(
             match ethertype {
                 tasks::PRIVATE_ETYPE_PACKET => {}
                 tasks::PRIVATE_ETYPE_TIMER => {
-                    ticks += 1;
-                    match rx.try_recv() {
-                        Ok(MessageTo::FetchCounter) => {
-                            debug!("{}: received FetchCounter", pipeline_id_clone);
-                            #[cfg(feature = "profiling")]
-                            {
-                                let stats_opt: Option<Vec<(u64, usize, usize)>> = profiler
-                                    .snapshot_rx_tx()
-                                    .map(|v| v.iter().map(|(t, rx, tx)| (*t, *rx as usize, *tx as usize)).collect());
-                                tx_clone
-                                    .send(MessageFrom::Counter(
-                                        pipeline_id_clone.clone(),
-                                        counter_c.clone(),
-                                        counter_s.clone(),
-                                        stats_opt,
-                                    ))
-                                    .unwrap();
-                            }
-                            #[cfg(not(feature = "profiling"))]
-                            tx_clone
-                                .send(MessageFrom::Counter(
-                                    pipeline_id_clone.clone(),
-                                    counter_c.clone(),
-                                    counter_s.clone(),
-                                    None,
-                                )).unwrap();
-                        }
-                        Ok(MessageTo::FetchCRecords) => {
-                            let c_recs = cm.fetch_c_records();
-                            debug!("{}: received FetchCRecords, returning {} records", pipeline_id_clone, if c_recs.is_some() { c_recs.as_ref().unwrap().len() } else { 0 });
-                            tx_clone
-                                .send(MessageFrom::CRecords(pipeline_id_clone.clone(), c_recs, None))
-                                .unwrap();
-                        }
-                        _ => {}
-                    }
-                    // check for timeouts
-                    // debug!("ticks = {}", ticks);
-                    if ticks % wheel_tick_reduction_factor == 0 {
-                        let current_tsc = unsafe { _rdtsc() };
-                        cm.release_timeouts(&current_tsc, &mut wheel);
-                    }
                     #[cfg(feature = "profiling")]
-                    {
-                        let tx_stats_now = tx_stats.stats.load(Ordering::Relaxed) as u64;
-                        let rx_stats_now = rx_stats.stats.load(Ordering::Relaxed) as u64;
-                        profiler.record_rx_tx_if_changed(unsafe { _rdtsc() }, rx_stats_now, tx_stats_now);
-                    }
+                    let mut profiler_opt = Some(&mut profiler);
+                    #[cfg(not(feature = "profiling"))]
+                    let mut profiler_opt: Option<&mut Profiler> = None;
+
+                    #[cfg(feature = "profiling")]
+                    let rx_now = Some(rx_stats.stats.load(Ordering::Relaxed) as u64);
+                    #[cfg(not(feature = "profiling"))]
+                    let rx_now: Option<u64> = None;
+
+                    #[cfg(feature = "profiling")]
+                    let tx_now = Some(tx_stats.stats.load(Ordering::Relaxed) as u64);
+                    #[cfg(not(feature = "profiling"))]
+                    let tx_now: Option<u64> = None;
+
+                    handle_timer_tick(
+                        &mut ticks,
+                        wheel_tick_reduction_factor,
+                        &mut cm,
+                        &mut wheel,
+                        &rx,
+                        &tx_clone,
+                        &pipeline_id_clone,
+                        &counter_c,
+                        &counter_s,
+                        profiler_opt.as_deref_mut(),
+                        rx_now,
+                        tx_now,
+                    );
                 }
                 _ => {
                     // We use a clone for reading tcp header to avoid immutable borrow.
@@ -420,12 +368,41 @@ pub fn setup_delayed_proxy<F1, F2>(
                             // once we established a two-way e2e-connection, we always forward the packets
                             if old_s_state >= TcpState::Established && old_s_state < TcpState::Closed
                                 && old_c_state >= TcpState::Established {
-                                counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
-                                counter_s[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
-                                client_to_server_common(&mut mode, pdu, &mut c, &me, &servers, &f_process_payload_c_s, &f_select_server);
-                                group_index = 1;
                                 #[cfg(feature = "profiling")]
-                                profiler.add_diff(6, timestamp_entry);
+                                {
+                                    forward_established_c2s(
+                                        &mut mode,
+                                        pdu,
+                                        &mut c,
+                                        &me,
+                                        &servers,
+                                        &f_process_payload_c_s,
+                                        &f_select_server,
+                                        &mut counter_c,
+                                        &mut counter_s,
+                                        Some(&mut profiler),
+                                        Some(6),
+                                        Some(timestamp_entry),
+                                    );
+                                }
+                                #[cfg(not(feature = "profiling"))]
+                                {
+                                    forward_established_c2s(
+                                        &mut mode,
+                                        pdu,
+                                        &mut c,
+                                        &me,
+                                        &servers,
+                                        &f_process_payload_c_s,
+                                        &f_select_server,
+                                        &mut counter_c,
+                                        &mut counter_s,
+                                        None,
+                                        None,
+                                        None,
+                                    );
+                                }
+                                group_index = 1;
                             }
                         }
                     } else {
@@ -457,64 +434,8 @@ pub fn setup_delayed_proxy<F1, F2>(
                                     }
                                     #[cfg(feature = "profiling")]
                                     profiler.add_diff(3, timestamp_entry);
-                                } else if tcp.fin_flag() {
-                                    if old_c_state >= TcpState::FinWait1 {
-                                        if tcp.ack_flag() && tcp.ack_num() == c.seqn_fin_p2s.wrapping_add(1) {
-                                            counter_s[TcpStatistics::RecvFinPssv] += 1;
-                                            counter_c[TcpStatistics::SentFinPssv] += 1;
-                                            counter_s[TcpStatistics::RecvAck4Fin] += 1;
-                                            counter_c[TcpStatistics::SentAck4Fin] += 1;
-                                            trace!("{} received FIN-reply from server on proxy port {}", thread_id, tcp.dst_port());
-                                            c.s_set_release_cause(ReleaseCause::PassiveClose);
-                                            c.s_push_state(TcpState::LastAck);
-                                        } else {
-                                            trace!("simultaneous active close from server on port {}", tcp.dst_port());
-                                            counter_s[TcpStatistics::RecvFin] += 1;
-                                            counter_c[TcpStatistics::SentFin] += 1;
-                                            c.s_set_release_cause(ReleaseCause::ActiveClose);
-                                            c.s_push_state(TcpState::Closing);
-                                            if old_c_state == TcpState::FinWait1 {
-                                                c.c_push_state(TcpState::Closing);
-                                            } else if old_c_state == TcpState::FinWait2 {
-                                                c.c_push_state(TcpState::Closed)
-                                            }
-                                        }
-                                    } else {
-                                        // server initiated TCP close
-                                        trace!(
-                                            "{} server closes connection on port {}/{} in state {:?}",
-                                            thread_id,
-                                            tcp.dst_port(),
-                                            c.sock().unwrap().1,
-                                            c.s_states(),
-                                        );
-                                        c.s_push_state(TcpState::FinWait1);
-                                        c.s_set_release_cause(ReleaseCause::ActiveClose);
-                                        counter_s[TcpStatistics::RecvFin] += 1;
-                                        counter_c[TcpStatistics::SentFin] += 1;
-                                    }
-                                } else if old_c_state >= TcpState::LastAck && tcp.ack_flag() {
-                                    if tcp.ack_num() == c.seqn_fin_p2s.wrapping_add(1) {
-                                        // received  Ack from server for a FIN
-                                        match old_c_state {
-                                            TcpState::LastAck => {
-                                                c.c_push_state(TcpState::Closed);
-                                                c.s_push_state(TcpState::Closed);
-                                            }
-                                            TcpState::FinWait1 => { c.c_push_state(TcpState::FinWait2) }
-                                            TcpState::Closing => {
-                                                c.c_push_state(TcpState::Closed);
-                                            }
-                                            _ => {}
-                                        }
-                                        match old_s_state {
-                                            TcpState::FinWait1 => {}
-                                            _ => {}
-                                        }
-                                        counter_s[TcpStatistics::RecvAck4Fin] += 1;
-                                        counter_c[TcpStatistics::SentAck4Fin] += 1;
-                                        trace!("{} on proxy port {} transition to client/server state {:?}/{:?}", thread_id, c.port(), c.c_states(), c.s_states());
-                                    }
+                                } else if handle_server_close_and_fin_acks(&tcp, &mut c, old_c_state, old_s_state, &mut counter_c, &mut counter_s, &thread_id) {
+                                    // handled by common helper
                                 } else {
                                     debug!("received from server { } in c/s state {:?}/{:?} ", tcp, c.c_states(), c.s_states());
                                     b_unexpected = true; //  may still be revised, see below
@@ -528,14 +449,36 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 if old_s_state >= TcpState::Established
                                     && old_c_state >= TcpState::Established
                                     && old_c_state < TcpState::Closed {
-                                    counter_s[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
-                                    // translate packets and forward to client
-                                    server_to_client_common(&mut mode, pdu, &mut c, &me);
-                                    counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
+                                    #[cfg(feature = "profiling")]
+                                    {
+                                        forward_established_s2c(
+                                            &mut mode,
+                                            pdu,
+                                            &mut c,
+                                            &me,
+                                            &mut counter_c,
+                                            &mut counter_s,
+                                            Some(&mut profiler),
+                                            Some(7),
+                                            Some(timestamp_entry),
+                                        );
+                                    }
+                                    #[cfg(not(feature = "profiling"))]
+                                    {
+                                        forward_established_s2c(
+                                            &mut mode,
+                                            pdu,
+                                            &mut c,
+                                            &me,
+                                            &mut counter_c,
+                                            &mut counter_s,
+                                            None,
+                                            None,
+                                            None,
+                                        );
+                                    }
                                     group_index = 1;
                                     b_unexpected = false;
-                                    #[cfg(feature = "profiling")]
-                                    profiler.add_diff(7, timestamp_entry);
                                 }
 
                                 if b_unexpected {
@@ -560,10 +503,7 @@ pub fn setup_delayed_proxy<F1, F2>(
             }
             // here we check if we shall release the connection state,
             // required because of borrow checker for the state manager sm
-            if let Some(sport) = release_connection {
-                trace!("releasing connection on port {}", sport);
-                cm.release_port(sport, &mut wheel);
-            }
+            release_if_needed(&mut cm, &mut wheel, &mut release_connection);
             group_index
         });
 
