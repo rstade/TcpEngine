@@ -20,7 +20,7 @@ use crate::netfcts::recstore::{Extension, Store64};
 use crate::Configuration;
 use crate::netfcts::comm::{ MessageFrom };
 use crate::netfcts::tasks::TaskType;
-use crate::proxy_common::{start_kni_forwarder, PduAllocator, make_context, DelayedMode, ProxyMode, handle_server_close_and_fin_acks, PROXY_PROF_LABELS, IngressDecision, ingress_classify, maybe_enable_tx_offload, pass_tcp_port_filter, handle_timer_tick, forward_established_c2s, forward_established_s2c, release_if_needed, client_sent_fin};
+use crate::proxy_common::{start_kni_forwarder, PduAllocator, make_context, DelayedMode, ProxyMode, handle_server_close_and_fin_acks, PROXY_PROF_LABELS, IngressDecision, ingress_classify, maybe_enable_tx_offload, pass_tcp_port_filter, handle_timer_tick, forward_established_c2s, forward_established_s2c, release_if_needed, client_sent_fin, handle_server_rst_and_rst_acks, server_to_client_common};
 use crate::profiling::Profiler;
 
 // (removed unused MIN_FRAME_SIZE)
@@ -316,40 +316,26 @@ pub fn setup_delayed_proxy<F1, F2>(
                             // once we established a two-way e2e-connection, we always forward the packets
                             if old_s_state >= TcpState::Established && old_s_state < TcpState::Closed
                                 && old_c_state >= TcpState::Established {
+                                // concise single call: prepare optional profiling args
                                 #[cfg(feature = "profiling")]
-                                {
-                                    forward_established_c2s(
-                                        &mut mode,
-                                        pdu,
-                                        &mut c,
-                                        &me,
-                                        &servers,
-                                        &f_process_payload_c_s,
-                                        &f_select_server,
-                                        &mut counter_c,
-                                        &mut counter_s,
-                                        Some(&mut profiler),
-                                        Some(6),
-                                        Some(timestamp_entry),
-                                    );
-                                }
+                                let (mut prof_opt_c2s, label_c2s, ts_c2s) = (Some(&mut profiler), Some(6usize), Some(timestamp_entry));
                                 #[cfg(not(feature = "profiling"))]
-                                {
-                                    forward_established_c2s(
-                                        &mut mode,
-                                        pdu,
-                                        &mut c,
-                                        &me,
-                                        &servers,
-                                        &f_process_payload_c_s,
-                                        &f_select_server,
-                                        &mut counter_c,
-                                        &mut counter_s,
-                                        None,
-                                        None,
-                                        None,
-                                    );
-                                }
+                                let (mut prof_opt_c2s, label_c2s, ts_c2s): (Option<&mut Profiler>, Option<usize>, Option<u64>) = (None, None, None);
+
+                                forward_established_c2s(
+                                    &mut mode,
+                                    pdu,
+                                    &mut c,
+                                    &me,
+                                    &servers,
+                                    &f_process_payload_c_s,
+                                    &f_select_server,
+                                    &mut counter_c,
+                                    &mut counter_s,
+                                    prof_opt_c2s.as_deref_mut(),
+                                    label_c2s,
+                                    ts_c2s,
+                                );
                                 group_index = 1;
                             }
                         }
@@ -384,7 +370,11 @@ pub fn setup_delayed_proxy<F1, F2>(
                                     profiler.add_diff(3, timestamp_entry);
                                 } else if handle_server_close_and_fin_acks(&tcp, &mut c, old_c_state, old_s_state, &mut counter_c, &mut counter_s, &thread_id) {
                                     // handled by common helper
-                                } else {
+                                } else if handle_server_rst_and_rst_acks(&tcp, &mut c, old_c_state, old_s_state, &mut counter_c, &mut counter_s, &thread_id) {
+                                    server_to_client_common(&mut mode, pdu, &mut c, &ctx.me);
+                                    // handled by common helper
+                                }
+                                else {
                                     debug!("received from server { } in c/s state {:?}/{:?} ", tcp, c.c_states(), c.s_states());
                                     b_unexpected = true; //  may still be revised, see below
                                 }
@@ -397,34 +387,23 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 if old_s_state >= TcpState::Established
                                     && old_c_state >= TcpState::Established
                                     && old_c_state < TcpState::Closed {
+                                    // concise single call: prepare optional profiling args
                                     #[cfg(feature = "profiling")]
-                                    {
-                                        forward_established_s2c(
-                                            &mut mode,
-                                            pdu,
-                                            &mut c,
-                                            &me,
-                                            &mut counter_c,
-                                            &mut counter_s,
-                                            Some(&mut profiler),
-                                            Some(7),
-                                            Some(timestamp_entry),
-                                        );
-                                    }
+                                    let (mut prof_opt_s2c, label_s2c, ts_s2c) = (Some(&mut profiler), Some(7usize), Some(timestamp_entry));
                                     #[cfg(not(feature = "profiling"))]
-                                    {
-                                        forward_established_s2c(
-                                            &mut mode,
-                                            pdu,
-                                            &mut c,
-                                            &me,
-                                            &mut counter_c,
-                                            &mut counter_s,
-                                            None,
-                                            None,
-                                            None,
-                                        );
-                                    }
+                                    let (mut prof_opt_s2c, label_s2c, ts_s2c): (Option<&mut Profiler>, Option<usize>, Option<u64>) = (None, None, None);
+
+                                    forward_established_s2c(
+                                        &mut mode,
+                                        pdu,
+                                        &mut c,
+                                        &me,
+                                        &mut counter_c,
+                                        &mut counter_s,
+                                        prof_opt_s2c.as_deref_mut(),
+                                        label_s2c,
+                                        ts_s2c,
+                                    );
                                     group_index = 1;
                                     b_unexpected = false;
                                 }

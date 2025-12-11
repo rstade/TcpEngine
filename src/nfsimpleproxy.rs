@@ -26,7 +26,7 @@ use crate::netfcts::tasks::TaskType;
 use {crate::FnProxyPayload};
 use crate::profiling::Profiler;
 use crate::proxy_common::{
-    make_context, ProxyContext, SimpleMode,
+    make_context, SimpleMode,
     handle_server_close_and_fin_acks, handle_timer_tick, server_to_client_common,
     forward_established_c2s, forward_established_s2c, release_if_needed,
     PROXY_PROF_LABELS, IngressDecision, ingress_classify, maybe_enable_tx_offload, pass_tcp_port_filter,
@@ -58,9 +58,9 @@ pub fn setup_simple_proxy<F1, F2>(
     let pipeline_id = ctx.pipeline_id.clone();
     debug!("enter setup_forwarder {}", pipeline_id);
     let tx = run_configuration.remote_sender.clone();
-    let cm: ConnectionManager = ctx.cm;
+    let mut cm: ConnectionManager = ctx.cm;
     let timeouts = ctx.timeouts;
-    let wheel = ctx.wheel;
+    let mut wheel = ctx.wheel;
 
     // reverse channel already created in context
     let rx = ctx.rx_runtime;
@@ -112,25 +112,13 @@ pub fn setup_simple_proxy<F1, F2>(
     #[cfg(feature = "profiling")]
     let rx_stats = pci.rx_stats();
 
-    // Build context for shared handlers (do not rely on partially-moved ctx)
-    let mut ctx_shared = ProxyContext {
-        me: me.clone(),
-        servers: servers.clone(),
-        pipeline_id: pipeline_id.clone(),
-        system_data: system_data.clone(),
-        cm,
-        timeouts,
-        wheel,
-        rx_runtime: rx,
-    };
-
     let mut mode = SimpleMode;
 
     let simple_proxy_closure =
         // this is the main closure containing the proxy service logic
         Box::new( move |pdu: &mut Pdu| {
 
-            // use shared handlers via mode + ctx_shared
+            // use shared handlers via mode and local context bindings
 
 
 
@@ -184,9 +172,9 @@ pub fn setup_simple_proxy<F1, F2>(
                     handle_timer_tick(
                         &mut ticks,
                         wheel_tick_reduction_factor,
-                        &mut ctx_shared.cm,
-                        &mut ctx_shared.wheel,
-                        &ctx_shared.rx_runtime,
+                        &mut cm,
+                        &mut wheel,
+                        &rx,
                         &tx_clone,
                         &pipeline_id_clone,
                         &counter_c,
@@ -205,12 +193,12 @@ pub fn setup_simple_proxy<F1, F2>(
                     if tcp.dst_port() == me.l234.port {
                         //trace!("client to server");
                         let opt_c = if tcp.syn_flag() {
-                            let c = ctx_shared.cm.get_mut_or_insert(&src_sock);
+                            let c = cm.get_mut_or_insert(&src_sock);
                             #[cfg(feature = "profiling")]
                             profiler.add_diff(0, timestamp_entry);
                             c
                         } else {
-                            let c = ctx_shared.cm.get_mut_by_sock(&src_sock);
+                            let c = cm.get_mut_by_sock(&src_sock);
                             #[cfg(feature = "profiling")]
                             profiler.add_diff(8, timestamp_entry);
                             c
@@ -246,7 +234,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                     counter_s[TcpStatistics::SentSyn] += 1;
                                     //counter_c[TcpStatistics::RecvPayload] += 1;
 
-                                    c.wheel_slot_and_index = ctx_shared.wheel.schedule(&(ctx_shared.timeouts.established.unwrap() * ctx_shared.system_data.cpu_clock / 1000), c.port());
+                                    c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
                                     group_index = 1;
                                 } else {
                                     warn!("received client SYN in state {:?}/{:?}, {:?}/{:?}, {}", old_c_state, old_s_state, c.c_states(), c.s_states(), tcp);
@@ -329,40 +317,26 @@ pub fn setup_simple_proxy<F1, F2>(
                             // once we established a two-way e2e-connection, we always forward the packets
                             if old_s_state >= TcpState::Established && old_s_state < TcpState::Closed
                                 && old_c_state >= TcpState::Established {
+                                // concise single call: prepare optional profiling args
                                 #[cfg(feature = "profiling")]
-                                {
-                                    forward_established_c2s(
-                                        &mut mode,
-                                        pdu,
-                                        &mut c,
-                                        &ctx_shared.me,
-                                        &ctx_shared.servers,
-                                        &f_process_payload_c_s,
-                                        &f_select_server,
-                                        &mut counter_c,
-                                        &mut counter_s,
-                                        Some(&mut profiler),
-                                        Some(6),
-                                        Some(timestamp_entry),
-                                    );
-                                }
+                                let (mut prof_opt_c2s, label_c2s, ts_c2s) = (Some(&mut profiler), Some(6usize), Some(timestamp_entry));
                                 #[cfg(not(feature = "profiling"))]
-                                {
-                                    forward_established_c2s(
-                                        &mut mode,
-                                        pdu,
-                                        &mut c,
-                                        &ctx_shared.me,
-                                        &ctx_shared.servers,
-                                        &f_process_payload_c_s,
-                                        &f_select_server,
-                                        &mut counter_c,
-                                        &mut counter_s,
-                                        None,
-                                        None,
-                                        None,
-                                    );
-                                }
+                                let (mut prof_opt_c2s, label_c2s, ts_c2s): (Option<&mut Profiler>, Option<usize>, Option<u64>) = (None, None, None);
+
+                                forward_established_c2s(
+                                    &mut mode,
+                                    pdu,
+                                    &mut c,
+                                    &me,
+                                    &servers,
+                                    &f_process_payload_c_s,
+                                    &f_select_server,
+                                    &mut counter_c,
+                                    &mut counter_s,
+                                    prof_opt_c2s.as_deref_mut(),
+                                    label_c2s,
+                                    ts_c2s,
+                                );
                                 group_index = 1;
                             }
                         }
@@ -370,7 +344,7 @@ pub fn setup_simple_proxy<F1, F2>(
                         // server to client
                         {
                             //debug!("looking up state for server side port { }", tcp.dst_port());
-                            let mut c = ctx_shared.cm.get_mut_by_port(tcp.dst_port());
+                            let mut c = cm.get_mut_by_port(tcp.dst_port());
                             #[cfg(feature = "profiling")]
                             profiler.add_diff(1, timestamp_entry);
 
@@ -386,7 +360,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                         // ****  valid SYN+ACK received from server
                                         debug!("{}  SYN-ACK received from server : L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
                                         // translate packet and forward to client
-                                        server_to_client_common(&mut mode, pdu, &mut c, &ctx_shared.me);
+                                        server_to_client_common(&mut mode, pdu, &mut c, &me);
                                         //counter_s[TcpStatistics::SentPayload] += 1;
                                         counter_c[TcpStatistics::SentSynAck] += 1;
                                         group_index = 1;
@@ -399,7 +373,7 @@ pub fn setup_simple_proxy<F1, F2>(
                                 } else if handle_server_close_and_fin_acks(&tcp, &mut c, old_c_state, old_s_state, &mut counter_c, &mut counter_s, &thread_id) {
                                     // handled by common helper
                                 } else if handle_server_rst_and_rst_acks(&tcp, &mut c, old_c_state, old_s_state, &mut counter_c, &mut counter_s, &thread_id) {
-                                    server_to_client_common(&mut mode, pdu, &mut c, &ctx_shared.me);
+                                    server_to_client_common(&mut mode, pdu, &mut c, &me);
                                     // handled by common helper
                                 }
                                 else {
@@ -415,34 +389,23 @@ pub fn setup_simple_proxy<F1, F2>(
                                 if old_s_state >= TcpState::Established
                                     && old_c_state >= TcpState::Established
                                     && old_c_state < TcpState::Closed {
+                                    // concise single call: prepare optional profiling args
                                     #[cfg(feature = "profiling")]
-                                    {
-                                        forward_established_s2c(
-                                            &mut mode,
-                                            pdu,
-                                            &mut c,
-                                            &ctx_shared.me,
-                                            &mut counter_c,
-                                            &mut counter_s,
-                                            Some(&mut profiler),
-                                            Some(7),
-                                            Some(timestamp_entry),
-                                        );
-                                    }
+                                    let (mut prof_opt_s2c, label_s2c, ts_s2c) = (Some(&mut profiler), Some(7usize), Some(timestamp_entry));
                                     #[cfg(not(feature = "profiling"))]
-                                    {
-                                        forward_established_s2c(
-                                            &mut mode,
-                                            pdu,
-                                            &mut c,
-                                            &ctx_shared.me,
-                                            &mut counter_c,
-                                            &mut counter_s,
-                                            None,
-                                            None,
-                                            None,
-                                        );
-                                    }
+                                    let (mut prof_opt_s2c, label_s2c, ts_s2c): (Option<&mut Profiler>, Option<usize>, Option<u64>) = (None, None, None);
+
+                                    forward_established_s2c(
+                                        &mut mode,
+                                        pdu,
+                                        &mut c,
+                                        &me,
+                                        &mut counter_c,
+                                        &mut counter_s,
+                                        prof_opt_s2c.as_deref_mut(),
+                                        label_s2c,
+                                        ts_s2c,
+                                    );
                                     group_index = 1;
                                     b_unexpected = false;
                                 }
@@ -469,7 +432,7 @@ pub fn setup_simple_proxy<F1, F2>(
             }
             // here we check if we shall release the connection state,
             // required because of borrow checker for the state manager sm
-            release_if_needed(&mut ctx_shared.cm, &mut ctx_shared.wheel, &mut release_connection);
+            release_if_needed(&mut cm, &mut wheel, &mut release_connection);
             group_index
         });
 
