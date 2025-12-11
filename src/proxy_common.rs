@@ -171,6 +171,7 @@ pub fn release_if_needed(
 }
 
 /// Wrapper for established client->server forwarding: updates counters, calls shared handler, and profiles.
+#[inline]
 pub fn forward_established_c2s<M, FP, FSel>(
     mode: &mut M,
     p: &mut Pdu,
@@ -200,6 +201,7 @@ pub fn forward_established_c2s<M, FP, FSel>(
 }
 
 /// Wrapper for established server->client forwarding: updates counters, calls shared handler, and profiles.
+#[inline]
 pub fn forward_established_s2c<M>(
     mode: &mut M,
     p: &mut Pdu,
@@ -220,6 +222,53 @@ pub fn forward_established_s2c<M>(
     #[cfg(feature = "profiling")]
     if let (Some(prof), Some(idx), Some(ts)) = (profiler, profile_label_idx, timestamp_entry) {
         prof.add_diff(idx, ts);
+    }
+}
+
+pub fn client_sent_fin(tcp: &TcpHeader, old_s_state: TcpState, pdu: &mut Pdu, c: &mut ProxyConnection, counter_c: &mut TcpCounter, counter_s: &mut TcpCounter) {
+    if old_s_state >= TcpState::FinWait1 { // server in active close, client in passive or also active close
+        if tcp.ack_flag() && tcp.ack_num() == unsafe { c.seqn.ack_for_fin_p2c } {
+            counter_c[TcpStatistics::RecvFinPssv] += 1;
+            counter_s[TcpStatistics::SentFinPssv] += 1;
+            counter_c[TcpStatistics::RecvAck4Fin] += 1;
+            counter_s[TcpStatistics::SentAck4Fin] += 1;
+            c.set_release_cause(ReleaseCause::PassiveClose);
+            c.c_push_state(TcpState::LastAck);
+        } else { // no ACK
+            counter_c[TcpStatistics::RecvFin] += 1;
+            counter_s[TcpStatistics::SentFin] += 1;
+            c.set_release_cause(ReleaseCause::ActiveClose);
+            c.c_push_state(TcpState::Closing); //will still receive FIN of server
+            if old_s_state == TcpState::FinWait1 {
+                c.s_push_state(TcpState::Closing);
+            } else if old_s_state == TcpState::FinWait2 {
+                c.s_push_state(TcpState::Closed)
+            }
+        }
+    } else { // server not in FinWait1, client in active close
+        c.set_release_cause(ReleaseCause::ActiveClose);
+        counter_c[TcpStatistics::RecvFin] += 1;
+        c.c_push_state(TcpState::FinWait1);
+        if old_s_state < TcpState::Established {
+            // in case the server connection is still not established
+            // proxy must close connection and sends Fin-Ack to client
+            make_reply_packet(pdu, 1);
+            pdu.headers_mut().tcp_mut(2).set_ack_flag();
+            c.c_seqn = c.c_seqn.wrapping_add(1);
+            pdu.headers_mut().tcp_mut(2).set_seq_num(c.c_seqn);
+            //debug!("data_len= { }, p= { }",p.data_len(), p);
+            prepare_checksum_and_ttl(pdu);
+            c.s_push_state(TcpState::LastAck); // pretend that server received the FIN
+            c.s_set_release_cause(ReleaseCause::PassiveClose);
+            counter_c[TcpStatistics::SentFinPssv] += 1;
+            counter_c[TcpStatistics::SentAck4Fin] += 1;
+            // do not use the clone "tcp" here:
+            c.seqn.ack_for_fin_p2c = c.c_seqn.wrapping_add(1);
+            //TODO send restart to server?
+            trace!("FIN-ACK to client, L3: { }, L4: { }", pdu.headers().ip(1), tcp);
+        } else {
+            counter_s[TcpStatistics::SentFin] += 1;
+        }
     }
 }
 
@@ -438,6 +487,7 @@ impl ProxyMode for DelayedMode {
         prepare_checksum_and_ttl(p);
     }
 
+    /// attention: after calling select_server, p points to a different mbuf and has different headers
     fn select_server<FSel: FnProxySelectServer>(
         &mut self,
         p: &mut Pdu,
@@ -712,6 +762,24 @@ pub fn handle_server_close_and_fin_acks(
     }
     false
 }
+
+pub fn handle_server_rst_and_rst_acks(
+    tcp: &TcpHeader,
+    c: &mut ProxyConnection,
+    old_c_state: TcpState,
+    old_s_state: TcpState,
+    counter_c: &mut TcpCounter,
+    counter_s: &mut TcpCounter,
+    thread_id: &str,
+) -> bool {
+    if tcp.rst_flag() {
+        counter_s[TcpStatistics::RecvRst] += 1;
+        return true;    // still a dummy
+    }
+    false
+}
+
+
 
 // Shared proxy infrastructure for simple and delayed TCP proxies.
 //

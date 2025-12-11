@@ -14,18 +14,13 @@ use uuid::Uuid;
 use crate::proxymanager::ConnectionManager;
 use crate::netfcts::tcp_common::*;
 use crate::netfcts::tasks;
-use crate::netfcts::{prepare_checksum_and_ttl, RunConfiguration, make_reply_packet};
+use crate::netfcts::RunConfiguration;
 use crate::netfcts::recstore::{Extension, Store64};
 
 use crate::Configuration;
 use crate::netfcts::comm::{ MessageFrom };
 use crate::netfcts::tasks::TaskType;
-use crate::proxy_common::{
-    start_kni_forwarder, PduAllocator, make_context, DelayedMode,
-    ProxyMode, handle_server_close_and_fin_acks,
-    PROXY_PROF_LABELS, IngressDecision, ingress_classify, maybe_enable_tx_offload, pass_tcp_port_filter,
-    handle_timer_tick, forward_established_c2s, forward_established_s2c, release_if_needed,
-};
+use crate::proxy_common::{start_kni_forwarder, PduAllocator, make_context, DelayedMode, ProxyMode, handle_server_close_and_fin_acks, PROXY_PROF_LABELS, IngressDecision, ingress_classify, maybe_enable_tx_offload, pass_tcp_port_filter, handle_timer_tick, forward_established_c2s, forward_established_s2c, release_if_needed, client_sent_fin};
 use crate::profiling::Profiler;
 
 // (removed unused MIN_FRAME_SIZE)
@@ -34,8 +29,8 @@ use crate::profiling::Profiler;
 
 /// This function actually defines the network function graph (NFG) for the application (tcp proxy) for
 /// a port (@pci) and its associated kernel network port (@kni) which the current core (@core) serves.
-/// The kni port is used to utilize protocol stacks of the kernel, e.g. ARP, ICMP, etc.
-/// For this purpose Kni has been assigned one or more MAC and IP addresses. Kni may be either a native Kni or a Virtio port.
+/// The kni port provides protocol stacks of the kernel, e.g. ARP, ICMP, etc.
+/// For this purpose Kni has been assigned one or more MAC and IP addresses. Kni is a Virtio port.
 pub fn setup_delayed_proxy<F1, F2>(
     core: i32,
     pci: CacheAligned<PortQueueTxBuffered>,
@@ -121,12 +116,7 @@ pub fn setup_delayed_proxy<F1, F2>(
         // this is the main closure containing the proxy service logic
         Box::new( move |pdu: &mut Pdu| {
             // this is the major closure for TCP processing
-
             // moved: local helpers replaced by shared trait hooks and common handlers
-
-            // attention: after calling select_server, p points to a different mbuf and has different headers
-            // selects the server by calling the closure, sends SYN to server
-            // local select_server moved into DelayedMode::select_server via trait hook
 
             // server_synack_received moved into DelayedMode::on_server_synack via trait hook
 
@@ -248,52 +238,8 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 #[cfg(feature = "profiling")]
                                 profiler.add_diff(4, timestamp_entry);
                             } else if tcp.fin_flag() {
-                                if old_s_state >= TcpState::FinWait1 { // server in active close, client in passive or also active close
-                                    if tcp.ack_flag() && tcp.ack_num() == unsafe { c.seqn.ack_for_fin_p2c } {
-                                        counter_c[TcpStatistics::RecvFinPssv] += 1;
-                                        counter_s[TcpStatistics::SentFinPssv] += 1;
-                                        counter_c[TcpStatistics::RecvAck4Fin] += 1;
-                                        counter_s[TcpStatistics::SentAck4Fin] += 1;
-                                        c.set_release_cause(ReleaseCause::PassiveClose);
-                                        c.c_push_state(TcpState::LastAck);
-                                    } else { // no ACK
-                                        counter_c[TcpStatistics::RecvFin] += 1;
-                                        counter_s[TcpStatistics::SentFin] += 1;
-                                        c.set_release_cause(ReleaseCause::ActiveClose);
-                                        c.c_push_state(TcpState::Closing); //will still receive FIN of server
-                                        if old_s_state == TcpState::FinWait1 {
-                                            c.s_push_state(TcpState::Closing);
-                                        } else if old_s_state == TcpState::FinWait2 {
-                                            c.s_push_state(TcpState::Closed)
-                                        }
-                                    }
-                                    group_index = 1;
-                                } else { // client in active close
-                                    c.set_release_cause(ReleaseCause::ActiveClose);
-                                    counter_c[TcpStatistics::RecvFin] += 1;
-                                    c.c_push_state(TcpState::FinWait1);
-                                    if old_s_state < TcpState::Established {
-                                        // in case the server connection is still not established
-                                        // proxy must close connection and sends Fin-Ack to client
-                                        make_reply_packet(pdu, 1);
-                                        pdu.headers_mut().tcp_mut(2).set_ack_flag();
-                                        c.c_seqn = c.c_seqn.wrapping_add(1);
-                                        pdu.headers_mut().tcp_mut(2).set_seq_num(c.c_seqn);
-                                        //debug!("data_len= { }, p= { }",p.data_len(), p);
-                                        prepare_checksum_and_ttl(pdu);
-                                        c.s_push_state(TcpState::LastAck); // pretend that server received the FIN
-                                        c.s_set_release_cause(ReleaseCause::PassiveClose);
-                                        counter_c[TcpStatistics::SentFinPssv] += 1;
-                                        counter_c[TcpStatistics::SentAck4Fin] += 1;
-                                        // do not use the clone "tcp" here:
-                                        c.seqn.ack_for_fin_p2c = c.c_seqn.wrapping_add(1);
-                                        //TODO send restart to server?
-                                        trace!("FIN-ACK to client, L3: { }, L4: { }", pdu.headers().ip(1), tcp);
-                                    } else {
-                                        counter_s[TcpStatistics::SentFin] += 1;
-                                    }
-                                    group_index = 1;
-                                }
+                                client_sent_fin(&tcp, old_s_state, pdu, c, &mut counter_c, &mut counter_s );
+                                 group_index = 1;
                             } else if tcp.rst_flag() {
                                 trace!("received RST");
                                 counter_c[TcpStatistics::RecvRst] += 1;
@@ -337,6 +283,8 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 && old_s_state == TcpState::Listen {
                                 // should be the first payload packet from client
                                 counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
+                                // local select_server moved into DelayedMode::select_server via trait hook
+                                // selects the server by calling the closure, sends SYN to server
                                 mode.select_server(pdu, &mut c, &me, &servers, &f_select_server);
                                 //trace!("after  select_server: p.refcnt = {}, packet_in.refcnt() = {}", pdu.refcnt(), pdu_in.refcnt());
                                 debug!("{} SYN packet to server - L3: {}, L4: {}", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));

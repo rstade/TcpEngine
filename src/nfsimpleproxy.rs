@@ -18,7 +18,7 @@ use crate::netfcts::set_header;
 use crate::netfcts::recstore::{Extension, Store64};
 
 use crate::Configuration;
-use crate::proxy_common::start_kni_forwarder;
+use crate::proxy_common::{client_sent_fin, handle_server_rst_and_rst_acks, start_kni_forwarder};
 use crate::FnProxySelectServer;
 use crate::netfcts::comm::{ MessageFrom };
 use crate::netfcts::tasks::TaskType;
@@ -216,7 +216,6 @@ pub fn setup_simple_proxy<F1, F2>(
                             c
                         };
 
-
                         if opt_c.is_none() {
                             warn!("{} unexpected client side packet: no state for socket ({}, {}), tcp= {}, discarding", thread_id, src_sock.0, src_sock.1, tcp);
                         } else {
@@ -267,33 +266,8 @@ pub fn setup_simple_proxy<F1, F2>(
                                 #[cfg(feature = "profiling")]
                                 profiler.add_diff(4, timestamp_entry);
                             } else if tcp.fin_flag() {
-                                if old_s_state >= TcpState::FinWait1 { // server in active close, client in passive or also active close
-                                    if tcp.ack_flag() && tcp.ack_num() == unsafe { c.seqn.ack_for_fin_p2c } {
-                                        counter_c[TcpStatistics::RecvFinPssv] += 1;
-                                        counter_s[TcpStatistics::SentFinPssv] += 1;
-                                        counter_c[TcpStatistics::RecvAck4Fin] += 1;
-                                        counter_s[TcpStatistics::SentAck4Fin] += 1;
-                                        c.set_release_cause(ReleaseCause::PassiveClose);
-                                        c.c_push_state(TcpState::LastAck);
-                                    } else { // no ACK
-                                        counter_c[TcpStatistics::RecvFin] += 1;
-                                        counter_s[TcpStatistics::SentFin] += 1;
-                                        c.set_release_cause(ReleaseCause::ActiveClose);
-                                        c.c_push_state(TcpState::Closing); //will still receive FIN of server
-                                        if old_s_state == TcpState::FinWait1 {
-                                            c.s_push_state(TcpState::Closing);
-                                        } else if old_s_state == TcpState::FinWait2 {
-                                            c.s_push_state(TcpState::Closed)
-                                        }
-                                    }
-                                    group_index = 1;
-                                } else { // client in active close
-                                    c.set_release_cause(ReleaseCause::ActiveClose);
-                                    counter_c[TcpStatistics::RecvFin] += 1;
-                                    c.c_push_state(TcpState::FinWait1);
-                                    counter_s[TcpStatistics::SentFin] += 1;
-                                    group_index = 1;
-                                }
+                                client_sent_fin(&tcp, old_s_state, pdu, c, &mut counter_c, &mut counter_s );
+                                group_index = 1;
                             } else if tcp.rst_flag() {
                                 trace!("received RST");
                                 counter_c[TcpStatistics::RecvRst] += 1;
@@ -424,7 +398,11 @@ pub fn setup_simple_proxy<F1, F2>(
                                     profiler.add_diff(3, timestamp_entry);
                                 } else if handle_server_close_and_fin_acks(&tcp, &mut c, old_c_state, old_s_state, &mut counter_c, &mut counter_s, &thread_id) {
                                     // handled by common helper
-                                } else {
+                                } else if handle_server_rst_and_rst_acks(&tcp, &mut c, old_c_state, old_s_state, &mut counter_c, &mut counter_s, &thread_id) {
+                                    server_to_client_common(&mut mode, pdu, &mut c, &ctx_shared.me);
+                                    // handled by common helper
+                                }
+                                else {
                                     // debug!("received from server { } in c/s state {:?}/{:?} ", tcp, c.con_rec.c_state, c.con_rec.s_state);
                                     b_unexpected = true; //  may still be revised, see below
                                 }

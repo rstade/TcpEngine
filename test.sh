@@ -34,7 +34,7 @@ build_and_run() {
   filter="select((.profile.test == true) and (.target.name == \"${test_name}\")) | .filenames[]"
 
   local executable
-  executable=$(cargo test "$@" --no-run --message-format=json --features "test-support profiling" --test "${test_name}" | jq -r "$filter")
+  executable=$(cargo test "$@" --release --no-run --message-format=json --features "test-support profiling" --test "${test_name}" | jq -r "$filter")
 
   echo "$executable"
   echo "$toml_path" > tests/toml_file.txt
@@ -64,7 +64,7 @@ case "$TASK" in
     build_and_run test_tcp_proxy ./tests/test_rfs_port.toml "tcp_lib=debug,test_tcp_proxy=debug,e2d2=info,netfcts=debug" "${@:2}"
     ;;
   test_rfs_port.3)
-      build_and_run test_tcp_proxy ./tests/test_rfs_port.3.toml "tcp_lib=info,test_tcp_proxy=debug,e2d2=info,netfcts=info" "${@:2}"
+      build_and_run test_tcp_proxy ./tests/test_rfs_port.3.toml "tcp_lib=info,test_tcp_proxy=info,e2d2=info,netfcts=info" "${@:2}"
       ;;
   timeout)
     build_and_run timeout ./tests/timeout.toml "tcp_lib=debug,timeout=debug,e2d2=info" "${@:2}"
@@ -79,7 +79,7 @@ case "$TASK" in
     build_and_run client_syn_fin ./tests/client_syn_fin.2.toml "tcp_lib=info,client_syn_fin=info,e2d2=info" "${@:2}"
     ;;
   client_syn_fin.3)
-    build_and_run client_syn_fin ./tests/client_syn_fin.3.toml "tcp_lib=debug,client_syn_fin=debug,e2d2=info" "${@:2}"
+    build_and_run client_syn_fin ./tests/client_syn_fin.3.toml "tcp_lib=info,client_syn_fin=debug,e2d2=info" "${@:2}"
     ;;
   ## the following targets are testing the TcpEngine as mode=TrafficEngine
   test_as_client)

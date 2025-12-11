@@ -59,10 +59,9 @@ fn tcp_proxy() {
         debug!("selecting {}", l234data[remainder].server_id);
     }
 
-    let run_configuration_cloned = run_configuration.clone();
-
     runtime.start_schedulers().expect("cannot start schedulers");
 
+    let run_configuration_cloned = run_configuration.clone();
     match mode {
         EngineMode::DelayedProxy => {
             runtime
