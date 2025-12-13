@@ -21,14 +21,13 @@ extern crate core;
 extern crate rand;
 
 pub mod nftraffic;
-pub mod nfdelayedproxy;
+pub mod nftcpproxy;
 pub mod run_test;
 mod tcpmanager;
 pub mod proxymanager;
 pub mod netfcts;
-pub mod nfsimpleproxy;
 pub mod runtime_install;
-pub mod proxy_common;
+pub mod proxy_helper;
 pub mod profiling;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -62,12 +61,11 @@ use netfcts::recstore::{Extension, Store64};
 use netfcts::system::{get_mac_from_ifname};
 use netfcts::tcp_common::tcp_payload_size;
 // use nfdelayedproxy::setup_delayed_proxy; // removed: no such function, use setup_tcp_proxy below
-use nfsimpleproxy::setup_simple_proxy;
 use nftraffic::setup_generator;
 
 pub use runtime_install::install_pipelines_for_all_cores;
-use crate::nfdelayedproxy::setup_tcp_proxy;
-use crate::proxy_common::{DelayedMode, PduAllocator};
+use crate::nftcpproxy::setup_tcp_proxy;
+use crate::proxy_helper::{DelayedMode, PduAllocator};
 
 // Replacement for former `trait alias` of a function-like constraint
 pub trait FnPayload: Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize
@@ -380,7 +378,7 @@ pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl 
             let (producer, consumer) = new_mpsc_queue_pair();
             let mode = DelayedMode { pdu_allocator: PduAllocator::new(), producer, bypass_consumer: Some(consumer) };
             setup_tcp_proxy(
-                mode,
+                Some(mode),
                 core,
                 pci,
                 kni,
@@ -403,7 +401,8 @@ pub fn get_simple_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl F
           s: &mut StandaloneScheduler,
           config: RunConfiguration<Configuration, Store64<Extension>>| {
         if pci.is_some() && kni.is_some() {
-            setup_simple_proxy(
+            setup_tcp_proxy(
+                None,
                 core,
                 pci.unwrap(),
                 kni.unwrap(),

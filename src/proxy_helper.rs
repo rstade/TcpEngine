@@ -172,8 +172,7 @@ pub fn release_if_needed(
 
 /// Wrapper for established client->server forwarding: updates counters, calls shared handler, and profiles.
 #[inline]
-pub fn forward_established_c2s<M, FP, FSel>(
-    mode: &mut M,
+pub fn forward_established_c2s<FP, FSel>(
     p: &mut Pdu,
     c: &mut ProxyConnection,
     me: &Me,
@@ -186,14 +185,13 @@ pub fn forward_established_c2s<M, FP, FSel>(
     profile_label_idx: Option<usize>,
     timestamp_entry: Option<u64>,
 ) where
-    M: ProxyMode,
     FP: FnProxyPayload,
     FSel: FnProxySelectServer,
 {
     let sz = tcp_payload_size(p);
     counter_c[TcpStatistics::RecvPayload] += sz;
     counter_s[TcpStatistics::SentPayload] += sz;
-    client_to_server_common(mode, p, c, me, servers, f_process_payload_c_s, f_select_server);
+    client_to_server_common(p, c, me, servers, f_process_payload_c_s, f_select_server);
     #[cfg(feature = "profiling")]
     if let (Some(prof), Some(idx), Some(ts)) = (profiler, profile_label_idx, timestamp_entry) {
         prof.add_diff(idx, ts);
@@ -202,8 +200,7 @@ pub fn forward_established_c2s<M, FP, FSel>(
 
 /// Wrapper for established server->client forwarding: updates counters, calls shared handler, and profiles.
 #[inline]
-pub fn forward_established_s2c<M>(
-    mode: &mut M,
+pub fn forward_established_s2c(
     p: &mut Pdu,
     c: &mut ProxyConnection,
     me: &Me,
@@ -212,12 +209,11 @@ pub fn forward_established_s2c<M>(
     profiler: Option<&mut Profiler>,
     profile_label_idx: Option<usize>,
     timestamp_entry: Option<u64>,
-) where
-    M: ProxyMode,
+) 
 {
     let sz = tcp_payload_size(p);
     counter_s[TcpStatistics::RecvPayload] += sz;
-    server_to_client_common(mode, p, c, me);
+    server_to_client_common(p, c, me);
     counter_c[TcpStatistics::SentPayload] += tcp_payload_size(p);
     #[cfg(feature = "profiling")]
     if let (Some(prof), Some(idx), Some(ts)) = (profiler, profile_label_idx, timestamp_entry) {
@@ -419,60 +415,6 @@ pub fn make_context(
     }
 }
 
-// ========================= Shared behavioral abstraction =========================
-
-/// Captures behavioral differences between simple and delayed proxy modes.
-/// Default implementations are no-ops for simple mode-like behavior.
-pub trait ProxyMode {
-    /// Called when the first client SYN arrives; can be a no-op for simple mode.
-    fn on_client_syn(&mut self, _p: &mut Pdu, _c: &mut ProxyConnection, _me: &Me) {}
-
-    /// Select a server address for this connection; simple mode selects immediately using provided function.
-    fn select_server<FSel: FnProxySelectServer>(
-        &mut self,
-        _p: &mut Pdu,
-        c: &mut ProxyConnection,
-        _me: &Me,
-        servers: &Vec<L234Data>,
-        f_select_server: &FSel,
-    ) {
-        // Default: call provided selector which updates connection in-place.
-        f_select_server(c, servers);
-    }
-
-    /// Optional per-packet payload processing on client->server path.
-    fn process_payload_c_s<FP: FnProxyPayload>(
-        &mut self,
-        _p: &mut Pdu,
-        _c: &mut ProxyConnection,
-        _me: &Me,
-        _f_process_payload: &FP,
-    ) {
-    }
-
-    /// Optional periodic tick; default is no-op.
-    fn tick(&mut self) {}
-
-    /// Optional PDU allocation facility (used by delayed mode). Default: none.
-    fn alloc_pdu(&mut self) -> Option<Pdu> { None }
-
-    /// Returns true if this mode is a delayed mode implementation.
-    /// Default: false (for simple/other modes).
-    fn is_delayed(&self) -> bool { false }
-
-    /// If the mode supports a bypass queue, return its consumer (moved out).
-    /// Default: None for modes without a bypass.
-    fn take_bypass_consumer(&mut self) -> Option<ReceiveBatch<MpscConsumer>> { None }
-
-    /// Called when SYN+ACK is received from server. Should craft and enqueue final ACK to server
-    /// and optionally the saved payload packet. Returns payload size enqueued (if any).
-    fn on_server_synack(&mut self, _p: &mut Pdu, _c: &mut ProxyConnection) -> usize { 0 }
-}
-
-/// Trivial mode with immediate decisions (used by the simple proxy)
-pub struct SimpleMode;
-
-impl ProxyMode for SimpleMode {}
 
 /// Delayed mode with facilities for crafting packets (e.g., server-side SYN).
 pub struct DelayedMode {
@@ -483,11 +425,11 @@ pub struct DelayedMode {
 
 
 
-impl ProxyMode for DelayedMode {
+impl DelayedMode {
     fn is_delayed(&self) -> bool { true }
     fn alloc_pdu(&mut self) -> Option<Pdu> { self.pdu_allocator.get_pdu() }
 
-    fn take_bypass_consumer(&mut self) -> Option<ReceiveBatch<MpscConsumer>> {
+    pub fn take_bypass_consumer(&mut self) -> Option<ReceiveBatch<MpscConsumer>> {
         self.bypass_consumer.take()
     }
 
@@ -504,7 +446,7 @@ impl ProxyMode for DelayedMode {
     }
 
     /// attention: after calling select_server, p points to a different mbuf and has different headers
-    fn select_server<FSel: FnProxySelectServer>(
+    pub fn select_server<FSel: FnProxySelectServer>(
         &mut self,
         p: &mut Pdu,
         c: &mut ProxyConnection,
@@ -564,7 +506,7 @@ impl ProxyMode for DelayedMode {
         prepare_checksum_and_ttl(p);
     }
 
-    fn on_server_synack(&mut self, p: &mut Pdu, c: &mut ProxyConnection) -> usize {
+    pub fn on_server_synack(&mut self, p: &mut Pdu, c: &mut ProxyConnection) -> usize {
         // correction for server side seq numbers
         let delta = c.c_seqn.wrapping_sub(p.headers().tcp(2).seq_num());
         c.c_seqn = delta;
@@ -612,8 +554,7 @@ impl ProxyMode for DelayedMode {
 }
 
 /// Common handler for client->server path shared by both proxy modes.
-pub fn client_to_server_common<M, FP, FSel>(
-    mode: &mut M,
+pub fn client_to_server_common<FP, FSel>(
     p: &mut Pdu,
     c: &mut ProxyConnection,
     me: &Me,
@@ -621,7 +562,6 @@ pub fn client_to_server_common<M, FP, FSel>(
     f_process_payload: &FP,
     f_select_server: &FSel,
 ) where
-    M: ProxyMode,
     FP: FnProxyPayload,
     FSel: FnProxySelectServer,
 {
@@ -629,13 +569,13 @@ pub fn client_to_server_common<M, FP, FSel>(
     if tcp_payload_size(p) > 0 {
         let tailroom = p.get_tailroom();
         f_process_payload(c, p.get_payload_mut(2), tailroom);
-        mode.process_payload_c_s(p, c, me, f_process_payload);
+        //mode.process_payload_c_s(p, c, me, f_process_payload);
     }
 
     // Ensure server selected (simple mode selects immediately, others may defer)
-    if c.server_index() >= servers.len() {
-        mode.select_server(p, c, me, servers, f_select_server);
-    }
+    //if c.server_index() >= servers.len() {
+    //    mode.select_server(p, c, me, servers, f_select_server);
+    //}
 
     // Rewriting headers client->server
     let server = &servers[c.server_index()];
@@ -664,13 +604,11 @@ pub fn client_to_server_common<M, FP, FSel>(
 }
 
 /// Common handler for server->client path shared by both proxy modes.
-pub fn server_to_client_common<M>(
-    _mode: &mut M,
+pub fn server_to_client_common(
     p: &mut Pdu,
     c: &mut ProxyConnection,
     me: &Me,
-) where
-    M: ProxyMode,
+)
 {
     let newseqn;
     {
