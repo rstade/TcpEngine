@@ -426,23 +426,10 @@ pub struct DelayedMode {
 
 
 impl DelayedMode {
-    fn is_delayed(&self) -> bool { true }
     fn alloc_pdu(&mut self) -> Option<Pdu> { self.pdu_allocator.get_pdu() }
 
     pub fn take_bypass_consumer(&mut self) -> Option<ReceiveBatch<MpscConsumer>> {
         self.bypass_consumer.take()
-    }
-
-    fn on_client_syn(&mut self, p: &mut Pdu, c: &mut ProxyConnection, _me: &Me) {
-        // Mirror existing delayed-proxy behavior: capture client MAC and craft immediate SYN-ACK
-        c.client_mac = p.headers().mac(0).src;
-        remove_tcp_options(p);
-        make_reply_packet(p, 1);
-        // Generate initial seq number based on TSC
-        c.c_seqn = (unsafe { _rdtsc() } << 8) as u32;
-        p.headers_mut().tcp_mut(2).set_seq_num(c.c_seqn);
-        c.ackn_p2c = p.headers().tcp(2).ack_num();
-        prepare_checksum_and_ttl(p);
     }
 
     /// attention: after calling select_server, p points to a different mbuf and has different headers
@@ -553,7 +540,7 @@ impl DelayedMode {
     }
 }
 
-/// Common handler for client->server path shared by both proxy modes.
+/// handler for client->server path shared by both proxy modes.
 pub fn client_to_server_common<FP, FSel>(
     p: &mut Pdu,
     c: &mut ProxyConnection,
@@ -717,21 +704,6 @@ pub fn handle_server_close_and_fin_acks(
     false
 }
 
-pub fn handle_server_rst_and_rst_acks(
-    tcp: &TcpHeader,
-    c: &mut ProxyConnection,
-    old_c_state: TcpState,
-    old_s_state: TcpState,
-    counter_c: &mut TcpCounter,
-    counter_s: &mut TcpCounter,
-    thread_id: &str,
-) -> bool {
-    if tcp.rst_flag() {
-        counter_s[TcpStatistics::RecvRst] += 1;
-        return true;    // still a dummy
-    }
-    false
-}
 
 
 

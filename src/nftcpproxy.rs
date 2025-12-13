@@ -22,10 +22,9 @@ use crate::netfcts::comm::MessageFrom;
 use crate::netfcts::tasks::TaskType;
 use crate::profiling::Profiler;
 use crate::proxy_helper::{
-    client_sent_fin, forward_established_c2s, forward_established_s2c, handle_server_close_and_fin_acks,
-    handle_server_rst_and_rst_acks, handle_timer_tick, ingress_classify, make_context, maybe_enable_tx_offload,
-    pass_tcp_port_filter, release_if_needed, server_to_client_common, start_kni_forwarder, DelayedMode, IngressDecision, Me,
-    PROXY_PROF_LABELS,
+    client_sent_fin, forward_established_c2s, forward_established_s2c, handle_timer_tick, ingress_classify,
+    make_context, maybe_enable_tx_offload, pass_tcp_port_filter, release_if_needed, server_to_client_common,
+    start_kni_forwarder, DelayedMode, IngressDecision, Me, PROXY_PROF_LABELS,
 };
 use crate::Configuration;
 
@@ -249,7 +248,6 @@ pub fn setup_tcp_proxy<F1, F2>(
                                         trace!("{} (SYN-)ACK to client, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
                                         counter_c[TcpStatistics::SentSynAck] += 1;
                                         c.c_push_state(TcpState::SynSent);
-                                        c.c_push_state(TcpState::SynSent);
                                         counter_c[TcpStatistics::RecvSyn] += 1;
                                         c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
                                         group_index = 1;
@@ -349,7 +347,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                                     }
 
                                     // First payload in delayed mode
-                                    (TcpState::Established, TcpState::Listen, _, _) if is_delayed => {
+                                    (TcpState::Established, TcpState::Listen, _, true) => {
                                         counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
                                         delayed_mode.as_mut().unwrap().select_server(pdu, &mut c, &me, &servers, &f_select_server);
                                         c.s_init();
@@ -422,7 +420,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                             }
 
                             match (old_c_state, old_s_state, tcp_flags, is_delayed) {
-                                // SYN-ACK from server
+                                // SYN-ACK from server - delayed mode
                                 (_, TcpState::SynReceived, TcpFlags::SynAck, true) => {
                                     c.s_push_state(TcpState::Established);
                                     debug!("{} established two-way client server connection, SYN-ACK received: L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
@@ -434,6 +432,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                                     profiler.add_diff(3, timestamp_entry);
                                 }
 
+                                // SYN-ACK from server - simple mode
                                 (_, TcpState::SynReceived, TcpFlags::SynAck, false) => {
                                     debug!("{}  SYN-ACK received from server : L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
                                     server_to_client_common(pdu, &mut c, &me);  // translate packet and forward to client
@@ -443,6 +442,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                                     profiler.add_diff(3, timestamp_entry);
                                 }
 
+                                // SYN-ACK in wrong state
                                 (_, _, TcpFlags::SynAck, _) => {
                                     warn!("{} received SYN-ACK in wrong state: {:?}", thread_id, old_s_state);
                                     #[cfg(feature = "profiling")]
@@ -450,17 +450,105 @@ pub fn setup_tcp_proxy<F1, F2>(
                                     group_index = 0;
                                 }
 
-                                // Server close/FIN/ACK handling
-                                (c_state, s_state, _, _) => {
-                                    if handle_server_close_and_fin_acks(&tcp, &mut c, c_state, s_state, &mut counter_c, &mut counter_s, &thread_id) {
-                                        // handled by helper
-                                    } else if handle_server_rst_and_rst_acks(&tcp, &mut c, c_state, s_state, &mut counter_c, &mut counter_s, &thread_id) {
-                                        server_to_client_common(pdu, &mut c, &me);
-                                        // handled by helper
-                                    } else {
-                                        debug!("received from server { } in c/s state {:?}/{:?} ", tcp, c.c_states(), c.s_states());
-                                        b_unexpected = true; //  may still be revised, see below
-                                    }
+                                // Server FIN-ACK reply after client initiated close (client in FinWait1+)
+                                (c_state, _, TcpFlags::FinAck, _)
+                                    if c_state >= TcpState::FinWait1
+                                    && tcp.ack_num() == c.seqn_fin_p2s.wrapping_add(1) => {
+                                    counter_s[TcpStatistics::RecvFinPssv] += 1;
+                                    counter_c[TcpStatistics::SentFinPssv] += 1;
+                                    counter_s[TcpStatistics::RecvAck4Fin] += 1;
+                                    counter_c[TcpStatistics::SentAck4Fin] += 1;
+                                    trace!("{} received FIN-reply from server on proxy port {}", thread_id, tcp.dst_port());
+                                    c.s_set_release_cause(ReleaseCause::PassiveClose);
+                                    c.s_push_state(TcpState::LastAck);
+                                }
+
+                                // Server FIN (simultaneous close) while client closing (client in FinWait1+)
+                                (TcpState::FinWait1, _, TcpFlags::Fin, _) => {
+                                    trace!("simultaneous active close from server on port {}", tcp.dst_port());
+                                    counter_s[TcpStatistics::RecvFin] += 1;
+                                    counter_c[TcpStatistics::SentFin] += 1;
+                                    c.s_set_release_cause(ReleaseCause::ActiveClose);
+                                    c.s_push_state(TcpState::Closing);
+                                    c.c_push_state(TcpState::Closing);
+                                }
+
+                                // Server FIN (simultaneous close) while client in FinWait2
+                                (TcpState::FinWait2, _, TcpFlags::Fin, _) => {
+                                    trace!("simultaneous active close from server on port {}", tcp.dst_port());
+                                    counter_s[TcpStatistics::RecvFin] += 1;
+                                    counter_c[TcpStatistics::SentFin] += 1;
+                                    c.s_set_release_cause(ReleaseCause::ActiveClose);
+                                    c.s_push_state(TcpState::Closing);
+                                    c.c_push_state(TcpState::Closed);
+                                }
+
+                                // Server FIN (simultaneous close) - other client tcp states
+                                (c_state, _, TcpFlags::Fin, _) if c_state >= TcpState::FinWait1 => {
+                                    trace!("simultaneous active close from server on port {}", tcp.dst_port());
+                                    counter_s[TcpStatistics::RecvFin] += 1;
+                                    counter_c[TcpStatistics::SentFin] += 1;
+                                    c.s_set_release_cause(ReleaseCause::ActiveClose);
+                                    c.s_push_state(TcpState::Closing);
+                                }
+
+                                // Server initiated close (FIN) - client not closing yet
+                                (_, _, TcpFlags::Fin | TcpFlags::FinAck, _) => {
+                                    trace!(
+                                        "{} server closes connection on port {}/{} in state {:?}",
+                                        thread_id,
+                                        tcp.dst_port(),
+                                        c.sock().unwrap().1,
+                                        c.s_states(),
+                                    );
+                                    c.s_push_state(TcpState::FinWait1);
+                                    c.s_set_release_cause(ReleaseCause::ActiveClose);
+                                    counter_s[TcpStatistics::RecvFin] += 1;
+                                    counter_c[TcpStatistics::SentFin] += 1;
+                                }
+
+                                // ACK from server for client's FIN - LastAck state
+                                (TcpState::LastAck, _, TcpFlags::Ack, _)
+                                    if tcp.ack_num() == c.seqn_fin_p2s.wrapping_add(1) => {
+                                    c.c_push_state(TcpState::Closed);
+                                    c.s_push_state(TcpState::Closed);
+                                    counter_s[TcpStatistics::RecvAck4Fin] += 1;
+                                    counter_c[TcpStatistics::SentAck4Fin] += 1;
+                                    trace!("{} on proxy port {} transition to client/server state {:?}/{:?}",
+                                        thread_id, c.port(), c.c_states(), c.s_states());
+                                }
+
+                                // ACK from server for client's FIN - FinWait1 state
+                                (TcpState::FinWait1, _, TcpFlags::Ack, _)
+                                    if tcp.ack_num() == c.seqn_fin_p2s.wrapping_add(1) => {
+                                    c.c_push_state(TcpState::FinWait2);
+                                    counter_s[TcpStatistics::RecvAck4Fin] += 1;
+                                    counter_c[TcpStatistics::SentAck4Fin] += 1;
+                                    trace!("{} on proxy port {} transition to client/server state {:?}/{:?}",
+                                        thread_id, c.port(), c.c_states(), c.s_states());
+                                }
+
+                                // ACK from server for client's FIN - Closing state
+                                (TcpState::Closing, _, TcpFlags::Ack, _)
+                                    if tcp.ack_num() == c.seqn_fin_p2s.wrapping_add(1) => {
+                                    c.c_push_state(TcpState::Closed);
+                                    counter_s[TcpStatistics::RecvAck4Fin] += 1;
+                                    counter_c[TcpStatistics::SentAck4Fin] += 1;
+                                    trace!("{} on proxy port {} transition to client/server state {:?}/{:?}",
+                                        thread_id, c.port(), c.c_states(), c.s_states());
+                                }
+
+                                // Server RST
+                                (_, _, TcpFlags::Rst, _) => {
+                                    counter_s[TcpStatistics::RecvRst] += 1;
+                                    server_to_client_common(pdu, &mut c, &me);
+                                    group_index = 1;
+                                }
+
+                                // All other cases
+                                _ => {
+                                    debug!("received from server { } in c/s state {:?}/{:?} ", tcp, c.c_states(), c.s_states());
+                                    b_unexpected = true; //  may still be revised, see below
                                 }
                             }
 
