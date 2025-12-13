@@ -56,15 +56,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bincode::serialize_into;
+use e2d2::queues::new_mpsc_queue_pair;
 use rand::Rng;
 use netfcts::recstore::{Extension, Store64};
 use netfcts::system::{get_mac_from_ifname};
 use netfcts::tcp_common::tcp_payload_size;
-use nfdelayedproxy::setup_delayed_proxy;
+// use nfdelayedproxy::setup_delayed_proxy; // removed: no such function, use setup_tcp_proxy below
 use nfsimpleproxy::setup_simple_proxy;
 use nftraffic::setup_generator;
 
 pub use runtime_install::install_pipelines_for_all_cores;
+use crate::nfdelayedproxy::setup_tcp_proxy;
+use crate::proxy_common::{DelayedMode, PduAllocator};
 
 // Replacement for former `trait alias` of a function-like constraint
 pub trait FnPayload: Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize
@@ -367,17 +370,20 @@ fn process_payload_c_s(_c: &mut ProxyConnection, _payload: &mut [u8], _tailroom:
 /// return the closure which creates the network function graph for the delayed tcp proxy
 pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl FnNetworkFunctionGraph {
     let select_target = select_target.unwrap_or(select_target_by_payload);
-
+    // Build the mode inside the closure to avoid capturing non-Send/Sync state.
     move |core: i32,
           pci: Option<PciQueueType>,
           kni: Option<KniQueueType>,
           s: &mut StandaloneScheduler,
           config: RunConfiguration<Configuration, Store64<Extension>>| {
-        if pci.is_some() && kni.is_some() {
-            setup_delayed_proxy(
+        if let (Some(pci), Some(kni)) = (pci, kni) {
+            let (producer, consumer) = new_mpsc_queue_pair();
+            let mode = DelayedMode { pdu_allocator: PduAllocator::new(), producer, bypass_consumer: Some(consumer) };
+            setup_tcp_proxy(
+                mode,
                 core,
-                pci.unwrap(),
-                kni.unwrap(),
+                pci,
+                kni,
                 s,
                 config,
                 select_target.clone(),

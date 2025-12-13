@@ -22,7 +22,7 @@ use crate::netfcts::{prepare_checksum_and_ttl, set_header};
 use crate::netfcts::tcp_common::tcp_payload_size;
 use crate::netfcts::{remove_tcp_options, make_reply_packet};
 use std::arch::x86_64::_rdtsc;
-use e2d2::queues::MpscProducer;
+use e2d2::queues::{MpscProducer, MpscConsumer};
 use e2d2::headers::Header;
 use crate::profiling::Profiler; // only for label shape; no runtime dependency
 use crate::netfcts::tasks::private_etype;
@@ -456,6 +456,14 @@ pub trait ProxyMode {
     /// Optional PDU allocation facility (used by delayed mode). Default: none.
     fn alloc_pdu(&mut self) -> Option<Pdu> { None }
 
+    /// Returns true if this mode is a delayed mode implementation.
+    /// Default: false (for simple/other modes).
+    fn is_delayed(&self) -> bool { false }
+
+    /// If the mode supports a bypass queue, return its consumer (moved out).
+    /// Default: None for modes without a bypass.
+    fn take_bypass_consumer(&mut self) -> Option<ReceiveBatch<MpscConsumer>> { None }
+
     /// Called when SYN+ACK is received from server. Should craft and enqueue final ACK to server
     /// and optionally the saved payload packet. Returns payload size enqueued (if any).
     fn on_server_synack(&mut self, _p: &mut Pdu, _c: &mut ProxyConnection) -> usize { 0 }
@@ -470,10 +478,18 @@ impl ProxyMode for SimpleMode {}
 pub struct DelayedMode {
     pub pdu_allocator: PduAllocator,
     pub producer: MpscProducer,
+    pub bypass_consumer: Option<ReceiveBatch<MpscConsumer>>,
 }
 
+
+
 impl ProxyMode for DelayedMode {
+    fn is_delayed(&self) -> bool { true }
     fn alloc_pdu(&mut self) -> Option<Pdu> { self.pdu_allocator.get_pdu() }
+
+    fn take_bypass_consumer(&mut self) -> Option<ReceiveBatch<MpscConsumer>> {
+        self.bypass_consumer.take()
+    }
 
     fn on_client_syn(&mut self, p: &mut Pdu, c: &mut ProxyConnection, _me: &Me) {
         // Mirror existing delayed-proxy behavior: capture client MAC and craft immediate SYN-ACK

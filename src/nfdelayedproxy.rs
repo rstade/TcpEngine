@@ -1,27 +1,28 @@
-use crate::FnProxyPayload;
+use std::arch::x86_64::_rdtsc;
+use crate::{FnProxyPayload, ProxyConnection};
 use crate::FnProxySelectServer;
-use e2d2::operators::{ReceiveBatch, Batch, merge_auto, SchedulingPolicy};
-use e2d2::scheduler::StandaloneScheduler;
 use e2d2::allocators::CacheAligned;
 use e2d2::interface::*;
+use e2d2::operators::{merge_auto, Batch, ReceiveBatch, SchedulingPolicy};
 use e2d2::queues::new_mpsc_queue_pair;
+use e2d2::scheduler::StandaloneScheduler;
 
 #[cfg(feature = "profiling")]
 use std::sync::atomic::Ordering;
 
 use uuid::Uuid;
 
-use crate::proxymanager::ConnectionManager;
-use crate::netfcts::tcp_common::*;
-use crate::netfcts::tasks;
-use crate::netfcts::RunConfiguration;
 use crate::netfcts::recstore::{Extension, Store64};
+use crate::netfcts::{make_reply_packet, prepare_checksum_and_ttl, remove_tcp_options, set_header, tasks};
+use crate::netfcts::tcp_common::*;
+use crate::netfcts::RunConfiguration;
+use crate::proxymanager::ConnectionManager;
 
-use crate::Configuration;
-use crate::netfcts::comm::{ MessageFrom };
+use crate::netfcts::comm::MessageFrom;
 use crate::netfcts::tasks::TaskType;
-use crate::proxy_common::{start_kni_forwarder, PduAllocator, make_context, DelayedMode, ProxyMode, handle_server_close_and_fin_acks, PROXY_PROF_LABELS, IngressDecision, ingress_classify, maybe_enable_tx_offload, pass_tcp_port_filter, handle_timer_tick, forward_established_c2s, forward_established_s2c, release_if_needed, client_sent_fin, handle_server_rst_and_rst_acks, server_to_client_common};
 use crate::profiling::Profiler;
+use crate::proxy_common::{client_sent_fin, forward_established_c2s, forward_established_s2c, handle_server_close_and_fin_acks, handle_server_rst_and_rst_acks, handle_timer_tick, ingress_classify, make_context, maybe_enable_tx_offload, pass_tcp_port_filter, release_if_needed, server_to_client_common, start_kni_forwarder, DelayedMode, IngressDecision, Me, PduAllocator, ProxyMode, PROXY_PROF_LABELS};
+use crate::Configuration;
 
 // (removed unused MIN_FRAME_SIZE)
 
@@ -31,17 +32,19 @@ use crate::profiling::Profiler;
 /// a port (@pci) and its associated kernel network port (@kni) which the current core (@core) serves.
 /// The kni port provides protocol stacks of the kernel, e.g. ARP, ICMP, etc.
 /// For this purpose Kni has been assigned one or more MAC and IP addresses. Kni is a Virtio port.
-pub fn setup_delayed_proxy<F1, F2>(
+pub fn setup_tcp_proxy<F1, F2, Mode>(
+    mut mode: Mode,
     core: i32,
     pci: CacheAligned<PortQueueTxBuffered>,
     kni: CacheAligned<PortQueue>,
     sched: &mut StandaloneScheduler,
-    run_configuration: RunConfiguration<Configuration,Store64<Extension>>,
+    run_configuration: RunConfiguration<Configuration, Store64<Extension>>,
     f_select_server: F1,
     f_process_payload_c_s: F2,
 ) where
     F1: FnProxySelectServer,
     F2: FnProxyPayload,
+    Mode: ProxyMode + 'static,
 {
     // Build shared proxy context
     let ctx = make_context(core, &pci, &kni, sched, &run_configuration);
@@ -55,17 +58,12 @@ pub fn setup_delayed_proxy<F1, F2>(
     let timeouts = ctx.timeouts;
     let mut wheel = ctx.wheel;
 
-    // we need this queue pair for the delayed bindrequest
-    let (producer, consumer) = new_mpsc_queue_pair();
-
     // reverse channel already set up in context
     let rx = ctx.rx_runtime;
 
     // forwarding frames coming from KNI to PCI
     start_kni_forwarder(sched, &kni, &pci, "Kni2Pci");
 
-    // Initialize delayed mode with its own PDU allocator (used for crafting packets as needed)
-    let mut mode = DelayedMode { pdu_allocator: PduAllocator::new(), producer: producer.clone() };
     let thread_id = format!("<c{}, rx{}>: ", core, pci.port_queue.rxq());
     let tcp_min_port = cm.tcp_port_base();
     let me_clone = me.clone();
@@ -75,9 +73,15 @@ pub fn setup_delayed_proxy<F1, F2>(
     let mut counter_c = TcpCounter::new();
     let mut counter_s = TcpCounter::new();
     #[cfg(feature = "profiling")]
-    let mut profiler = {
-        Profiler::new(PROXY_PROF_LABELS, 10_000, 100)
-    };
+    let mut profiler = { Profiler::new(PROXY_PROF_LABELS, 10_000, 100) };
+
+    // If this mode provides a bypass consumer, install the bypass pipe task now
+    // (before moving `mode` into closures below).
+    if let Some(consumer) = mode.take_bypass_consumer() {
+        let uuid_consumer = tasks::install_task(sched, "BypassPipe", consumer.send(pci.clone()));
+        tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_consumer, TaskType::BypassPipe))
+            .unwrap();
+    }
 
     // set up the generator producing timer tick packets with our private EtherType
     let (producer_timerticks, consumer_timerticks) = new_mpsc_queue_pair();
@@ -91,7 +95,7 @@ pub fn setup_delayed_proxy<F1, F2>(
         uuid_tick_generator,
         TaskType::TickGenerator,
     ))
-        .unwrap();
+    .unwrap();
 
     let receive_pci = ReceiveBatch::new(pci.clone());
     let l2_input_stream = merge_auto(
@@ -106,13 +110,27 @@ pub fn setup_delayed_proxy<F1, F2>(
     let uuid_l4groupby = Uuid::new_v4();
 
     #[cfg(feature = "profiling")]
-        let tx_stats = pci.tx_stats();
+    let tx_stats = pci.tx_stats();
     #[cfg(feature = "profiling")]
-        let rx_stats = pci.rx_stats();
+    let rx_stats = pci.rx_stats();
 
     // time_adders replaced by centralized Profiler
+    #[inline]
+    fn delayed_mode_on_client_syn(p: &mut Pdu, c: &mut ProxyConnection, _me: &Me) {
+        // Mirror existing delayed-proxy behavior: capture client MAC and craft immediate SYN-ACK
+        c.client_mac = p.headers().mac(0).src;
+        remove_tcp_options(p);
+        make_reply_packet(p, 1);
+        // Generate initial seq number based on TSC
+        c.c_seqn = (unsafe { _rdtsc() } << 8) as u32;
+        p.headers_mut().tcp_mut(2).set_seq_num(c.c_seqn);
+        c.ackn_p2c = p.headers().tcp(2).ack_num();
+        prepare_checksum_and_ttl(p);
+    }
 
-    let delayed_binding_closure =
+    let is_delayed = mode.is_delayed();
+
+    let proxy_closure =
         // this is the main closure containing the proxy service logic
         Box::new( move |pdu: &mut Pdu| {
             // this is the major closure for TCP processing
@@ -218,13 +236,24 @@ pub fn setup_delayed_proxy<F1, F2>(
                                 debug!("{} state= {:?}, diff= {}, tcp= {}", thread_id, old_s_state, diff, tcp);
                             } else if tcp.syn_flag() {
                                 if old_c_state == TcpState::Closed {
-                                    // Handle client SYN via delayed-mode hook (craft SYN-ACK)
-                                    mode.on_client_syn(pdu, &mut c, &me);
+                                    if (is_delayed) {
+                                        delayed_mode_on_client_syn(pdu, &mut c, &me);
+                                        trace!("{} (SYN-)ACK to client, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
+                                        counter_c[TcpStatistics::SentSynAck] += 1;
+                                    }
+                                    else { // simple mode
+                                        // save client MAC for return packets
+                                        c.client_mac = pdu.headers().mac(0).src;
+                                        // select server
+                                        f_select_server(c, &servers);
+                                        // and forward SYN
+                                        set_header(&servers[c.server_index()], c.port(), pdu, &me.l234.mac, me.ip_s);
+                                        prepare_checksum_and_ttl(pdu);
+                                        c.s_push_state(TcpState::SynReceived);
+                                        trace!("{} forward SYN to server, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
+                                    }
                                     c.c_push_state(TcpState::SynSent);
-                                    trace!("{} (SYN-)ACK to client, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
                                     counter_c[TcpStatistics::RecvSyn] += 1;
-                                    counter_c[TcpStatistics::SentSynAck] += 1;
-
                                     c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
                                     group_index = 1;
                                 } else {
@@ -235,6 +264,14 @@ pub fn setup_delayed_proxy<F1, F2>(
                             } else if tcp.ack_flag() && old_c_state == TcpState::SynSent {
                                 c.c_push_state(TcpState::Established);
                                 counter_c[TcpStatistics::RecvSynAck2] += 1;
+                                if(!is_delayed) {
+                                    counter_s[TcpStatistics::SentSynAck2] += 1;    // in simple mode pass through to server
+                                    set_header(&servers[c.server_index()], c.port(), pdu, &me.l234.mac, me.ip_s);
+                                    c.s_push_state(TcpState::Established);
+                                    c.c_push_state(TcpState::Established);
+                                    prepare_checksum_and_ttl(pdu);
+                                    group_index = 1;
+                                }
                                 #[cfg(feature = "profiling")]
                                 profiler.add_diff(4, timestamp_entry);
                             } else if tcp.fin_flag() {
@@ -434,18 +471,16 @@ pub fn setup_delayed_proxy<F1, F2>(
             group_index
         });
 
-    let mut l4groups = l2_input_stream.group_by(
-        3,
-        delayed_binding_closure,
-        sched,
-        "L4-Groups".to_string(),
-        uuid_l4groupby,
-    );
+    let mut l4groups = l2_input_stream.group_by(3, proxy_closure, sched, "L4-Groups".to_string(), uuid_l4groupby);
 
     let pipe2kni = l4groups.get_group(2).unwrap().send(kni.clone());
     let l4pciflow = l4groups.get_group(1).unwrap();
     let l4dumpflow = l4groups.get_group(0).unwrap().drop();
-    let pipe2pci = merge_auto(vec![Box::new(l4pciflow), Box::new(l4dumpflow)], SchedulingPolicy::LongestQueue).send(pci.clone());
+    let pipe2pci = merge_auto(
+        vec![Box::new(l4pciflow), Box::new(l4dumpflow)],
+        SchedulingPolicy::LongestQueue,
+    )
+    .send(pci.clone());
 
     let uuid_pipe2kni = tasks::install_task(sched, "Pipe2Kni", pipe2kni);
     tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::Pipe2Kni))
@@ -453,9 +488,5 @@ pub fn setup_delayed_proxy<F1, F2>(
 
     let uuid_pipe2pic = tasks::install_task(sched, "Pipe2Pci", pipe2pci);
     tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pic, TaskType::Pipe2Pci))
-        .unwrap();
-
-    let uuid_consumer = tasks::install_task(sched, "BypassPipe", consumer.send(pci.clone()));
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_consumer, TaskType::BypassPipe))
         .unwrap();
 }
