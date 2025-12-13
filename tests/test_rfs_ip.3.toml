@@ -10,7 +10,7 @@ ports       = [
               ]
 
 [engine]
-engine       = { mode= "DelayedProxy", port=999, timeouts= { established= 1800 }, detailed_records= true }
+engine       = { mode= "SimpleProxy", port=999, timeouts= { established= 1800 }, detailed_records= true }
 targets     = [ { id = "S1", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12345 },
                 { id = "S2", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12346 },
                 { id = "S3", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12347 },

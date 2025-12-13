@@ -1,6 +1,5 @@
 use serde_derive::{Serialize, Deserialize};
 use std::any::Any;
-use std::convert;
 use std::fmt;
 use std::fmt::Write;
 use std::net::SocketAddrV4;
@@ -10,6 +9,32 @@ use e2d2::common;
 
 use macaddr::MacAddr6 as MacAddress;
 use std::convert::TryFrom;
+use e2d2::headers::TcpHeader;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum TcpFlags {
+    Syn,
+    SynAck,
+    Ack,
+    Fin,
+    FinAck,
+    Rst,
+    Other,
+}
+
+impl TcpFlags {
+    pub(crate) fn from_tcp_header(tcp: &TcpHeader) -> Self {
+        match (tcp.syn_flag(), tcp.ack_flag(), tcp.fin_flag(), tcp.rst_flag()) {
+            (true, false, false, false) => TcpFlags::Syn,
+            (true, true, false, false) => TcpFlags::SynAck,
+            (false, true, true, false) => TcpFlags::FinAck,
+            (false, false, true, false) => TcpFlags::Fin,
+            (false, false, false, true) => TcpFlags::Rst,
+            (false, true, false, false) => TcpFlags::Ack,
+            _ => TcpFlags::Other,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum TcpState {
@@ -25,7 +50,7 @@ pub enum TcpState {
     Closed,
 }
 
-impl convert::From<u8> for TcpState {
+impl From<u8> for TcpState {
     fn from(i: u8) -> TcpState {
         match i {
             0 => TcpState::Listen,
@@ -49,7 +74,7 @@ pub enum TcpRole {
     Server,
 }
 
-impl convert::From<u8> for TcpRole {
+impl From<u8> for TcpRole {
     fn from(i: u8) -> TcpRole {
         match i {
             0 => TcpRole::Client,
@@ -82,7 +107,7 @@ pub enum TcpStatistics {
     Count = 18,
 }
 
-impl convert::From<usize> for TcpStatistics {
+impl From<usize> for TcpStatistics {
     fn from(i: usize) -> TcpStatistics {
         match i {
             0 => TcpStatistics::SentSyn,
@@ -120,7 +145,7 @@ pub enum ReleaseCause {
     MaxCauses = 6,
 }
 
-impl convert::From<u8> for ReleaseCause {
+impl From<u8> for ReleaseCause {
     fn from(i: u8) -> ReleaseCause {
         match i {
             0 => ReleaseCause::Unknown,
@@ -232,7 +257,7 @@ impl CData {
     #[inline]
     pub fn new(reply_socket: SocketAddrV4, client_port: u16, uuid: u64) -> CData {
         CData {
-            reply_socket: reply_socket,
+            reply_socket,
             client_port,
             uuid,
         }

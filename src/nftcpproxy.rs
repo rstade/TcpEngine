@@ -25,7 +25,7 @@ use crate::proxy_helper::{
     client_sent_fin, forward_established_c2s, forward_established_s2c, handle_server_close_and_fin_acks,
     handle_server_rst_and_rst_acks, handle_timer_tick, ingress_classify, make_context, maybe_enable_tx_offload,
     pass_tcp_port_filter, release_if_needed, server_to_client_common, start_kni_forwarder, DelayedMode, IngressDecision, Me,
-    PduAllocator, PROXY_PROF_LABELS,
+    PROXY_PROF_LABELS,
 };
 use crate::Configuration;
 
@@ -210,6 +210,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                     // But attention, this clone does not update, when we change the original header!
                     let tcp = pdu.headers().tcp(2).clone();
                     let src_sock = (pdu.headers().ip(1).src(), tcp.src_port());
+                    let tcp_flags = TcpFlags::from_tcp_header(&tcp);
 
                     if tcp.dst_port() == me.l234.port {
                         //trace!("client to server");
@@ -239,242 +240,274 @@ pub fn setup_tcp_proxy<F1, F2>(
                                 let diff = tcp.seq_num() as i64 - c.ackn_p2c as i64;
                                 //  a re-sent packet ?
                                 debug!("{} state= {:?}, diff= {}, tcp= {}", thread_id, old_s_state, diff, tcp);
-                            } else if tcp.syn_flag() {
-                                if old_c_state == TcpState::Closed {
-                                    if (is_delayed) {
+                            } else {
+                                match (old_c_state, old_s_state, tcp_flags, is_delayed) {
+
+                                    // SYN in CLOSED state - connection initiation, delayed mode
+                                    (TcpState::Closed, _, TcpFlags::Syn, true) => {
                                         delayed_mode_on_client_syn(pdu, &mut c, &me);
                                         trace!("{} (SYN-)ACK to client, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
                                         counter_c[TcpStatistics::SentSynAck] += 1;
+                                        c.c_push_state(TcpState::SynSent);
+                                        c.c_push_state(TcpState::SynSent);
+                                        counter_c[TcpStatistics::RecvSyn] += 1;
+                                        c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
+                                        group_index = 1;
+                                        #[cfg(feature = "profiling")]
+                                        profiler.add_diff(2, timestamp_entry);
                                     }
-                                    else { // simple mode
-                                        // save client MAC for return packets
+
+                                    // SYN in CLOSED state - connection initiation, simple mode
+                                    (TcpState::Closed, _, TcpFlags::Syn, false) => {
                                         c.client_mac = pdu.headers().mac(0).src;
-                                        // select server
                                         f_select_server(c, &servers);
-                                        // and forward SYN
                                         set_header(&servers[c.server_index()], c.port(), pdu, &me.l234.mac, me.ip_s);
                                         prepare_checksum_and_ttl(pdu);
                                         c.s_push_state(TcpState::SynReceived);
                                         counter_s[TcpStatistics::SentSyn] += 1;
                                         trace!("{} forward SYN to server, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
+                                        c.c_push_state(TcpState::SynSent);
+                                        counter_c[TcpStatistics::RecvSyn] += 1;
+                                        c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
+                                        group_index = 1;
+                                        #[cfg(feature = "profiling")]
+                                        profiler.add_diff(2, timestamp_entry);
                                     }
-                                    c.c_push_state(TcpState::SynSent);
-                                    counter_c[TcpStatistics::RecvSyn] += 1;
-                                    c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
-                                    group_index = 1;
-                                } else {
-                                    warn!("received client SYN in state {:?}/{:?}, {:?}/{:?}, {}", old_c_state, old_s_state, c.c_states(), c.s_states(), tcp);
+
+                                    // SYN not in CLOSED state
+                                    (_, _, TcpFlags::Syn, _) => {
+                                        warn!("received client SYN in state {:?}/{:?}, {:?}/{:?}, {}", old_c_state, old_s_state, c.c_states(), c.s_states(), tcp);
+                                    }
+
+                                    // ACK after SYN-SYN/ACK handshake
+                                    (TcpState::SynSent, _, TcpFlags::Ack, _) => {
+                                        c.c_push_state(TcpState::Established);
+                                        counter_c[TcpStatistics::RecvSynAck2] += 1;
+                                        if !is_delayed {
+                                            counter_s[TcpStatistics::SentSynAck2] += 1;
+                                            set_header(&servers[c.server_index()], c.port(), pdu, &me.l234.mac, me.ip_s);
+                                            c.s_push_state(TcpState::Established);
+                                            prepare_checksum_and_ttl(pdu);
+                                            group_index = 1;
+                                        }
+                                        #[cfg(feature = "profiling")]
+                                        profiler.add_diff(4, timestamp_entry);
+                                    }
+
+                                    // FIN received - connection teardown
+                                    (_, old_s, TcpFlags::Fin | TcpFlags::FinAck, _) => {
+                                        client_sent_fin(&tcp, old_s, pdu, c, &mut counter_c, &mut counter_s);
+                                        group_index = 1;
+                                    }
+
+                                    // RST received - abrupt connection close
+                                    (_, _, TcpFlags::Rst, _) => {
+                                        trace!("received RST");
+                                        counter_c[TcpStatistics::RecvRst] += 1;
+                                        c.c_push_state(TcpState::Closed);
+                                        c.set_release_cause(ReleaseCause::ActiveRst);
+                                        release_connection = Some(c.port());
+                                    }
+
+                                    // ACK from client for server's FIN
+                                    (_, TcpState::FinWait1 | TcpState::Closing | TcpState::FinWait2 | TcpState::Closed, TcpFlags::Ack, _)
+                                    if tcp.ack_num() == unsafe { c.seqn.ack_for_fin_p2c } => {
+                                        trace!(
+                                            "{}  ACK from client, src_port= {}, old_s_state = {:?}",
+                                            thread_id,
+                                            tcp.src_port(),
+                                            old_s_state,
+                                        );
+                                        match old_s_state {
+                                            TcpState::FinWait1 => { c.s_push_state(TcpState::FinWait2); }
+                                            TcpState::Closing => { c.s_push_state(TcpState::Closed); }
+                                            _ => {}
+                                        }
+                                        match old_c_state {
+                                            TcpState::Established => { c.c_push_state(TcpState::CloseWait) }
+                                            TcpState::FinWait1 => { c.c_push_state(TcpState::Closing) }
+                                            TcpState::FinWait2 => { c.c_push_state(TcpState::Closed) }
+                                            _ => {}
+                                        }
+                                        counter_c[TcpStatistics::RecvAck4Fin] += 1;
+                                        counter_s[TcpStatistics::SentAck4Fin] += 1;
+                                    }
+
+                                    // Final ACK in LastAck state
+                                    (_, TcpState::LastAck, TcpFlags::Ack, _)
+                                    if tcp.ack_num() == unsafe { c.seqn.ack_for_fin_p2c } => {
+                                        trace!(
+                                            "{} received final ACK for client initiated close on port {}/{}",
+                                            thread_id,
+                                            tcp.src_port(),
+                                            c.port(),
+                                        );
+                                        c.s_push_state(TcpState::Closed);
+                                        c.c_push_state(TcpState::Closed);
+                                        counter_c[TcpStatistics::RecvAck4Fin] += 1;
+                                        counter_s[TcpStatistics::SentAck4Fin] += 1;
+                                    }
+
+                                    // First payload in delayed mode
+                                    (TcpState::Established, TcpState::Listen, _, _) if is_delayed => {
+                                        counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
+                                        delayed_mode.as_mut().unwrap().select_server(pdu, &mut c, &me, &servers, &f_select_server);
+                                        c.s_init();
+                                        c.s_push_state(TcpState::SynReceived);
+                                        counter_s[TcpStatistics::SentSyn] += 1;
+                                        group_index = 1;
+                                        #[cfg(feature = "profiling")]
+                                        profiler.add_diff(5, timestamp_entry);
+                                    }
+
+                                    // Unexpected packet in non-established states
+                                    (c_state, s_state, _, _) if s_state < TcpState::SynReceived || c_state < TcpState::Established => {
+                                        warn!(
+                                            "{} unexpected client-side TCP packet on port {}/{} in client/server state {:?}/{:?}",
+                                            thread_id, tcp.src_port(), c.port(), c.c_states(), c.s_states()
+                                        );
+                                        counter_c[TcpStatistics::Unexpected] += 1;
+                                        group_index = 2;
+                                    }
+
+                                    // Default case
+                                    _ => {
+                                        trace!("c2s: nothing to do?, tcp= {}, tcp_payload_size={}", tcp, tcp_payload_size(pdu));
+                                    }
                                 }
-                                #[cfg(feature = "profiling")]
-                                profiler.add_diff(2, timestamp_entry);
-                            } else if tcp.ack_flag() && old_c_state == TcpState::SynSent {
-                                c.c_push_state(TcpState::Established);
-                                counter_c[TcpStatistics::RecvSynAck2] += 1;
-                                if(!is_delayed) {
-                                    counter_s[TcpStatistics::SentSynAck2] += 1;    // in simple mode pass through to server
-                                    set_header(&servers[c.server_index()], c.port(), pdu, &me.l234.mac, me.ip_s);
+
+                                // once we established a two-way e2e-connection, we always forward the packets
+                                if old_s_state >= TcpState::Established && old_s_state < TcpState::Closed
+                                    && old_c_state >= TcpState::Established {
+                                    // concise single call: prepare optional profiling args
+                                    #[cfg(feature = "profiling")]
+                                    let (mut prof_opt_c2s, label_c2s, ts_c2s) = (Some(&mut profiler), Some(6usize), Some(timestamp_entry));
+                                    #[cfg(not(feature = "profiling"))]
+                                    let (mut prof_opt_c2s, label_c2s, ts_c2s): (Option<&mut Profiler>, Option<usize>, Option<u64>) = (None, None, None);
+
+                                    forward_established_c2s(
+                                        pdu,
+                                        &mut c,
+                                        &me,
+                                        &servers,
+                                        &f_process_payload_c_s,
+                                        &f_select_server,
+                                        &mut counter_c,
+                                        &mut counter_s,
+                                        prof_opt_c2s.as_deref_mut(),
+                                        label_c2s,
+                                        ts_c2s,
+                                    );
+                                    group_index = 1;
+                                }
+
+                           }
+                        }
+                    } else {
+                        // server to client
+
+                        debug!("looking up state for server side port { }", tcp.dst_port());
+                        let mut c = cm.get_mut_by_port(tcp.dst_port());
+                        #[cfg(feature = "profiling")]
+                        profiler.add_diff(1, timestamp_entry);
+
+                        if c.is_some() {
+                            let mut c = c.as_mut().unwrap();
+                            let mut b_unexpected = false;
+                            let old_s_state = c.server_state();
+                            let old_c_state = c.client_state();
+
+                            if tcp.ack_flag() && tcp.syn_flag() {
+                                counter_s[TcpStatistics::RecvSynAck] += 1;
+                            }
+
+                            match (old_c_state, old_s_state, tcp_flags, is_delayed) {
+                                // SYN-ACK from server
+                                (_, TcpState::SynReceived, TcpFlags::SynAck, true) => {
                                     c.s_push_state(TcpState::Established);
-                                    c.c_push_state(TcpState::Established);
-                                    prepare_checksum_and_ttl(pdu);
+                                    debug!("{} established two-way client server connection, SYN-ACK received: L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
+                                    let payload_size = delayed_mode.as_mut().unwrap().on_server_synack(pdu, &mut c);
+                                    counter_s[TcpStatistics::SentPayload] += payload_size;
+                                    counter_s[TcpStatistics::SentSynAck2] += 1;
+                                    group_index = 0;
+                                    #[cfg(feature = "profiling")]
+                                    profiler.add_diff(3, timestamp_entry);
+                                }
+
+                                (_, TcpState::SynReceived, TcpFlags::SynAck, false) => {
+                                    debug!("{}  SYN-ACK received from server : L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
+                                    server_to_client_common(pdu, &mut c, &me);  // translate packet and forward to client
+                                    counter_c[TcpStatistics::SentSynAck] += 1;
                                     group_index = 1;
+                                    #[cfg(feature = "profiling")]
+                                    profiler.add_diff(3, timestamp_entry);
                                 }
-                                #[cfg(feature = "profiling")]
-                                profiler.add_diff(4, timestamp_entry);
-                            } else if tcp.fin_flag() {
-                                client_sent_fin(&tcp, old_s_state, pdu, c, &mut counter_c, &mut counter_s );
-                                 group_index = 1;
-                            } else if tcp.rst_flag() {
-                                trace!("received RST");
-                                counter_c[TcpStatistics::RecvRst] += 1;
-                                c.c_push_state(TcpState::Closed);
-                                c.set_release_cause(ReleaseCause::ActiveRst);
-                                release_connection = Some(c.port());
-                            } else if tcp.ack_flag() && tcp.ack_num() == unsafe { c.seqn.ack_for_fin_p2c } && old_s_state >= TcpState::FinWait1 {
-                                // ACK from client for FIN of Server
-                                trace!(
-                                    "{}  ACK from client, src_port= {}, old_s_state = {:?}",
-                                    thread_id,
-                                    tcp.src_port(),
-                                    old_s_state,
-                                );
-                                match old_s_state {
-                                    TcpState::FinWait1 => { c.s_push_state(TcpState::FinWait2); }
-                                    TcpState::Closing => { c.s_push_state(TcpState::Closed); }
-                                    _ => {}
+
+                                (_, _, TcpFlags::SynAck, _) => {
+                                    warn!("{} received SYN-ACK in wrong state: {:?}", thread_id, old_s_state);
+                                    #[cfg(feature = "profiling")]
+                                    profiler.add_diff(3, timestamp_entry);
+                                    group_index = 0;
                                 }
-                                match old_c_state {
-                                    TcpState::Established => { c.c_push_state(TcpState::CloseWait) }
-                                    TcpState::FinWait1 => { c.c_push_state(TcpState::Closing) }
-                                    TcpState::FinWait2 => { c.c_push_state(TcpState::Closed) }
-                                    _ => {}
+
+                                // Server close/FIN/ACK handling
+                                (c_state, s_state, _, _) => {
+                                    if handle_server_close_and_fin_acks(&tcp, &mut c, c_state, s_state, &mut counter_c, &mut counter_s, &thread_id) {
+                                        // handled by helper
+                                    } else if handle_server_rst_and_rst_acks(&tcp, &mut c, c_state, s_state, &mut counter_c, &mut counter_s, &thread_id) {
+                                        server_to_client_common(pdu, &mut c, &me);
+                                        // handled by helper
+                                    } else {
+                                        debug!("received from server { } in c/s state {:?}/{:?} ", tcp, c.c_states(), c.s_states());
+                                        b_unexpected = true; //  may still be revised, see below
+                                    }
                                 }
-                                counter_c[TcpStatistics::RecvAck4Fin] += 1;
-                                counter_s[TcpStatistics::SentAck4Fin] += 1;
-                            } else if old_s_state == TcpState::LastAck && tcp.ack_flag() && tcp.ack_num() == unsafe { c.seqn.ack_for_fin_p2c } {
-                                // received final ack from client for client initiated close
-                                trace!(
-                                    "{} received final ACK for client initiated close on port {}/{}",
-                                    thread_id,
-                                    tcp.src_port(),
-                                    c.port(),
-                                );
-                                c.s_push_state(TcpState::Closed);
-                                c.c_push_state(TcpState::Closed);
-                                counter_c[TcpStatistics::RecvAck4Fin] += 1;
-                                counter_s[TcpStatistics::SentAck4Fin] += 1;
-                            } else if is_delayed && old_c_state == TcpState::Established
-                                && old_s_state == TcpState::Listen {
-                                // should be the first payload packet from client
-                                counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
-                                // local select_server moved into DelayedMode::select_server via trait hook
-                                // selects the server by calling the closure, sends SYN to server
-                                delayed_mode.as_mut().unwrap().select_server(pdu, &mut c, &me, &servers, &f_select_server);
-                                //trace!("after  select_server: p.refcnt = {}, packet_in.refcnt() = {}", pdu.refcnt(), pdu_in.refcnt());
-                                debug!("{} SYN packet to server - L3: {}, L4: {}", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
-                                c.s_init();
-                                c.s_push_state(TcpState::SynReceived);
-                                counter_s[TcpStatistics::SentSyn] += 1;
-                                group_index = 1;
-                                #[cfg(feature = "profiling")]
-                                profiler.add_diff(5, timestamp_entry);
-                            } else if old_s_state < TcpState::SynReceived || old_c_state < TcpState::Established {
-                                warn!(
-                                    "{} unexpected client-side TCP packet on port {}/{} in client/server state {:?}/{:?}, sending to KNI i/f",
-                                    thread_id,
-                                    tcp.src_port(),
-                                    c.port(),
-                                    c.c_states(),
-                                    c.s_states(),
-                                );
-                                counter_c[TcpStatistics::Unexpected] += 1;
-                                group_index = 2;
-                            } else {
-                                trace! {"c2s: nothing to do?, tcp= {}, tcp_payload_size={}, expected ackn_for_fin ={}", tcp, tcp_payload_size(pdu), unsafe { c.seqn.ack_for_fin_p2c }}
                             }
 
                             if c.client_state() == TcpState::Closed && c.server_state() == TcpState::Closed {
                                 release_connection = Some(c.port());
                             }
 
-                            // once we established a two-way e2e-connection, we always forward the packets
-                            if old_s_state >= TcpState::Established && old_s_state < TcpState::Closed
-                                && old_c_state >= TcpState::Established {
+                            // once we established a two-way e-2-e connection, we always forward server side packets
+                            if old_s_state >= TcpState::Established
+                                && old_c_state >= TcpState::Established
+                                && old_c_state < TcpState::Closed {
                                 // concise single call: prepare optional profiling args
                                 #[cfg(feature = "profiling")]
-                                let (mut prof_opt_c2s, label_c2s, ts_c2s) = (Some(&mut profiler), Some(6usize), Some(timestamp_entry));
+                                let (mut prof_opt_s2c, label_s2c, ts_s2c) = (Some(&mut profiler), Some(7usize), Some(timestamp_entry));
                                 #[cfg(not(feature = "profiling"))]
-                                let (mut prof_opt_c2s, label_c2s, ts_c2s): (Option<&mut Profiler>, Option<usize>, Option<u64>) = (None, None, None);
+                                let (mut prof_opt_s2c, label_s2c, ts_s2c): (Option<&mut Profiler>, Option<usize>, Option<u64>) = (None, None, None);
 
-                                forward_established_c2s(
+                                forward_established_s2c(
                                     pdu,
                                     &mut c,
                                     &me,
-                                    &servers,
-                                    &f_process_payload_c_s,
-                                    &f_select_server,
                                     &mut counter_c,
                                     &mut counter_s,
-                                    prof_opt_c2s.as_deref_mut(),
-                                    label_c2s,
-                                    ts_c2s,
+                                    prof_opt_s2c.as_deref_mut(),
+                                    label_s2c,
+                                    ts_s2c,
                                 );
                                 group_index = 1;
+                                b_unexpected = false;
                             }
-                        }
-                    } else {
-                        // server to client
-                        {
-                            debug!("looking up state for server side port { }", tcp.dst_port());
-                            let mut c = cm.get_mut_by_port(tcp.dst_port());
-                            #[cfg(feature = "profiling")]
-                            profiler.add_diff(1, timestamp_entry);
 
-                            if c.is_some() {
-                                let mut c = c.as_mut().unwrap();
-                                let mut b_unexpected = false;
-                                let old_s_state = c.server_state();
-                                let old_c_state = c.client_state();
-                                // **** received SYN+ACK from server
-                                if tcp.ack_flag() && tcp.syn_flag() {
-                                    counter_s[TcpStatistics::RecvSynAck] += 1;
-                                    if old_s_state == TcpState::SynReceived {
-                                        if(is_delayed) {
-                                            c.s_push_state(TcpState::Established);
-                                            debug!("{} established two-way client server connection, SYN-ACK received: L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
-                                            let payload_size = delayed_mode.as_mut().unwrap().on_server_synack(pdu, &mut c);
-                                            counter_s[TcpStatistics::SentPayload] += payload_size;
-                                            counter_s[TcpStatistics::SentSynAck2] += 1;
-                                            group_index = 0; // delayed payload packets are sent via extra queue
-                                        }
-                                        else {
-                                            // ****  valid SYN+ACK received from server
-                                            debug!("{}  SYN-ACK received from server : L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
-                                            // translate packet and forward to client
-                                            server_to_client_common(pdu, &mut c, &me);
-                                            counter_c[TcpStatistics::SentSynAck] += 1;
-                                            group_index = 1;
-                                        }
-                                    } else {
-                                        warn!("{} received SYN-ACK in wrong state: {:?}", thread_id, old_s_state);
-                                        group_index = 0;
-                                    }
-                                    #[cfg(feature = "profiling")]
-                                    profiler.add_diff(3, timestamp_entry);
-                                } else if handle_server_close_and_fin_acks(&tcp, &mut c, old_c_state, old_s_state, &mut counter_c, &mut counter_s, &thread_id) {
-                                    // handled by common helper
-                                } else if handle_server_rst_and_rst_acks(&tcp, &mut c, old_c_state, old_s_state, &mut counter_c, &mut counter_s, &thread_id) {
-                                    server_to_client_common(pdu, &mut c, &ctx.me);
-                                    // handled by common helper
-                                }
-                                else {
-                                    debug!("received from server { } in c/s state {:?}/{:?} ", tcp, c.c_states(), c.s_states());
-                                    b_unexpected = true; //  may still be revised, see below
-                                }
-
-                                if c.client_state() == TcpState::Closed && c.server_state() == TcpState::Closed {
-                                    release_connection = Some(c.port());
-                                }
-
-                                // once we established a two-way e-2-e connection, we always forward server side packets
-                                if old_s_state >= TcpState::Established
-                                    && old_c_state >= TcpState::Established
-                                    && old_c_state < TcpState::Closed {
-                                    // concise single call: prepare optional profiling args
-                                    #[cfg(feature = "profiling")]
-                                    let (mut prof_opt_s2c, label_s2c, ts_s2c) = (Some(&mut profiler), Some(7usize), Some(timestamp_entry));
-                                    #[cfg(not(feature = "profiling"))]
-                                    let (mut prof_opt_s2c, label_s2c, ts_s2c): (Option<&mut Profiler>, Option<usize>, Option<u64>) = (None, None, None);
-
-                                    forward_established_s2c(
-                                        pdu,
-                                        &mut c,
-                                        &me,
-                                        &mut counter_c,
-                                        &mut counter_s,
-                                        prof_opt_s2c.as_deref_mut(),
-                                        label_s2c,
-                                        ts_s2c,
-                                    );
-                                    group_index = 1;
-                                    b_unexpected = false;
-                                }
-
-                                if b_unexpected {
-                                    warn!(
-                                        "{} unexpected server side TCP packet on port {}/{} in client/server state {:?}/{:?}, sending to KNI i/f",
-                                        thread_id,
-                                        tcp.dst_port(),
-                                        c.sock().unwrap().1,
-                                        c.c_states(),
-                                        c.s_states(),
-                                    );
-                                    group_index = 2;
-                                }
-                            } else {
-                                warn!("{} unexpected server side packet: no state on port {}, sending to KNI i/f", thread_id, tcp.dst_port());
-                                // we send this to KNI which handles out-of-order TCP, e.g. by sending RST
+                            if b_unexpected {
+                                warn!(
+                                    "{} unexpected server side TCP packet on port {}/{} in client/server state {:?}/{:?}, sending to KNI i/f",
+                                    thread_id,
+                                    tcp.dst_port(),
+                                    c.sock().unwrap().1,
+                                    c.c_states(),
+                                    c.s_states(),
+                                );
                                 group_index = 2;
                             }
+                        }
+                        else {
+                            warn!("{} unexpected server side packet: no state on port {}, sending to KNI i/f", thread_id, tcp.dst_port());
+                            // we send this to KNI which handles out-of-order TCP, e.g. by sending RST
+                            group_index = 2;
                         }
                     }
                 }
