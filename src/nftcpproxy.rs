@@ -384,7 +384,6 @@ pub fn setup_tcp_proxy<F1, F2>(
                                         &me,
                                         &servers,
                                         &f_process_payload_c_s,
-                                        &f_select_server,
                                         &mut counter_c,
                                         &mut counter_s,
                                         prof_opt_c2s.as_deref_mut(),

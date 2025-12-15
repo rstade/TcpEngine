@@ -159,7 +159,6 @@ fn delayed_binding_proxy() {
     // emulate clients
     let queries = configuration.test_size.unwrap();
     // for this test tcp client timeout must be shorter than timeouts by timer wheel
-    let timeout = Duration::new(0, 1u32);
 
     const CLIENT_THREADS: usize = 5;
     for _i in 0..CLIENT_THREADS {
@@ -169,26 +168,6 @@ fn delayed_binding_proxy() {
                     Ok(mut stream) => {
                         debug!("test connection {}: TCP connect to proxy successful", ntry);
                         stream.shutdown(std::net::Shutdown::Both).unwrap();
-                        /*                        stream.set_write_timeout(Some(timeout)).unwrap();
-                        stream.set_read_timeout(Some(timeout)).unwrap();
-                        match stream.write(&format!("{} stars", ntry).to_string().into_bytes()) {
-                            Ok(_) => {
-                                debug!("successfully send {} stars", ntry);
-                                let mut buf = [0u8; 256];
-                                match stream.read(&mut buf[..]) {
-                                    Ok(_) => {
-                                        info!("on try {} we received {}", ntry, String::from_utf8(buf.to_vec()).unwrap())
-                                    }
-                                    _ => {
-                                        debug!("timeout on connection {} while waiting for answer", ntry);
-                                    }
-                                };
-                            }
-                            _ => {
-                                panic!("error when writing to test connection {}", ntry);
-                            }
-                        }
-                        */
                     }
                     _ => {
                         panic!("test connection {}: 3-way handshake with proxy failed", ntry);

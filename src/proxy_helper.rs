@@ -172,13 +172,12 @@ pub fn release_if_needed(
 
 /// Wrapper for established client->server forwarding: updates counters, calls shared handler, and profiles.
 #[inline]
-pub fn forward_established_c2s<FP, FSel>(
+pub fn forward_established_c2s<FP>(
     p: &mut Pdu,
     c: &mut ProxyConnection,
     me: &Me,
     servers: &Vec<L234Data>,
     f_process_payload_c_s: &FP,
-    f_select_server: &FSel,
     counter_c: &mut TcpCounter,
     counter_s: &mut TcpCounter,
     profiler: Option<&mut Profiler>,
@@ -186,12 +185,11 @@ pub fn forward_established_c2s<FP, FSel>(
     timestamp_entry: Option<u64>,
 ) where
     FP: FnProxyPayload,
-    FSel: FnProxySelectServer,
 {
     let sz = tcp_payload_size(p);
     counter_c[TcpStatistics::RecvPayload] += sz;
     counter_s[TcpStatistics::SentPayload] += sz;
-    client_to_server_common(p, c, me, servers, f_process_payload_c_s, f_select_server);
+    client_to_server_common(p, c, me, servers, f_process_payload_c_s);
     #[cfg(feature = "profiling")]
     if let (Some(prof), Some(idx), Some(ts)) = (profiler, profile_label_idx, timestamp_entry) {
         prof.add_diff(idx, ts);
@@ -541,29 +539,21 @@ impl DelayedMode {
 }
 
 /// handler for client->server path shared by both proxy modes.
-pub fn client_to_server_common<FP, FSel>(
+pub fn client_to_server_common<FP>(
     p: &mut Pdu,
     c: &mut ProxyConnection,
     me: &Me,
     servers: &Vec<L234Data>,
     f_process_payload: &FP,
-    f_select_server: &FSel,
 ) where
     FP: FnProxyPayload,
-    FSel: FnProxySelectServer,
 {
     // Optional payload processing
     if tcp_payload_size(p) > 0 {
         let tailroom = p.get_tailroom();
         f_process_payload(c, p.get_payload_mut(2), tailroom);
-        //mode.process_payload_c_s(p, c, me, f_process_payload);
     }
-
-    // Ensure server selected (simple mode selects immediately, others may defer)
-    //if c.server_index() >= servers.len() {
-    //    mode.select_server(p, c, me, servers, f_select_server);
-    //}
-
+    
     // Rewriting headers client->server
     let server = &servers[c.server_index()];
     set_header(server, c.port(), p, &me.l234.mac, me.ip_s);
