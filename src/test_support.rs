@@ -25,7 +25,7 @@ pub fn spawn_test_servers(fin_by_client: usize, targets: Vec<TargetConfig>) -> V
         .into_iter()
         .map(|server| {
             let target_port = server.port;
-            let target_ip: Ipv4Addr = server.ip;
+            let target_ip: Ipv4Addr = server.ipnet.addr();
             let id = server.id;
             thread::spawn(move || match TcpListener::bind((target_ip, target_port)) {
                 Ok(listener1) => {

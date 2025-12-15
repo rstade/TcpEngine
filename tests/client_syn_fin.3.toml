@@ -14,7 +14,7 @@ ports       = [
 
 engine      = { mode= "DelayedProxy", flow_steering="Port", namespace="nsvirtio00", mac="a0:36:9f:82:9c:fc", ipnet="192.168.222.1/24", port=999, timeouts= { established= 1800}, detailed_records= true  }
 
-targets     = [ { id = "server 1", ip = "192.168.222.100", linux_if="enp114s0f1" , port = 12345 },
-                { id = "server 2", ip = "192.168.222.100", linux_if="enp114s0f1" , port = 12346 },
+targets     = [ { id = "server 1", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port = 12345 },
+                { id = "server 2", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port = 12346 },
               ]
 test_size   = 5

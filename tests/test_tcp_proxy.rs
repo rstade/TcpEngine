@@ -29,14 +29,33 @@ use tcp_lib::netfcts::io::{print_tcp_counters, print_rx_tx_counters};
 use tcp_lib::netfcts::conrecord::{HasTcpState, ConRecord};
 use tcp_lib::netfcts::comm::{MessageFrom, MessageTo};
 use tcp_lib::netfcts::recstore::Extension;
-use tcp_lib::{EngineMode, get_delayed_tcp_proxy_nfg, get_simple_tcp_proxy_nfg, initialize_engine, ProxyConnection,
-          setup_pipelines};
+use tcp_lib::{EngineMode, get_delayed_tcp_proxy_nfg, get_simple_tcp_proxy_nfg, initialize_engine, ProxyConnection, setup_pipelines, configure_interfaces};
 
 
 #[test]
 fn tcp_proxy() {
     let (mut runtime, mode, _running) = initialize_engine(true);
     let run_configuration = runtime.run_configuration.clone();
+
+    // Option 1: Stop on first error
+    match configure_interfaces(&*run_configuration.engine_configuration.targets) {
+       Ok(_) => {}
+       Err(e) => {
+           eprintln!("❌ Failed: {}", e);
+           std::process::exit(1);
+       }
+    }
+
+    // Option 2: Continue on errors and collect them
+    //let errors = configure_interfaces(&*run_configuration.engine_configuration.targets);
+    //if !errors.is_empty() {
+    //    eprintln!("Failed targets:");
+    //    for (id, err) in errors {
+    //        eprintln!("  - {}: {}", id, err);
+    //    }
+    //    std::process::exit(1);
+    //}
+
     let configuration = &run_configuration.engine_configuration;
 
     if run_configuration.engine_configuration.test_size.is_none() {
@@ -145,7 +164,7 @@ fn tcp_proxy() {
     // set up servers
     for server in configuration.targets.clone() {
         let target_port = server.port; // moved into thread
-        let target_ip = server.ip;
+        let target_ip = server.ipnet.addr();
         let id = server.id;
         thread::spawn(move || match TcpListener::bind((target_ip, target_port)) {
             Ok(listener1) => {

@@ -28,8 +28,6 @@ use crate::proxy_helper::{
 };
 use crate::Configuration;
 
-// (removed unused MIN_FRAME_SIZE)
-
 // Timer wheel configuration and overflow guard are centralized in proxy_common
 
 /// This function actually defines the network function graph (NFG) for the application (tcp proxy) for
@@ -138,11 +136,8 @@ pub fn setup_tcp_proxy<F1, F2>(
         // this is the main closure containing the proxy service logic
         Box::new( move |pdu: &mut Pdu| {
             // this is the major closure for TCP processing
-            // moved: local helpers replaced by shared trait hooks and common handlers
 
-            // server_synack_received moved into DelayedMode::on_server_synack via trait hook
-
-// *****  the closure starts here with processing
+            // *****  the closure starts here with processing
 
             #[cfg(feature = "profiling")]
             let timestamp_entry = profiler.start();

@@ -133,7 +133,7 @@ fn delayed_binding_proxy() {
     // set up servers
     for server in configuration.targets.clone() {
         let target_port = server.port; // moved into thread
-        let target_ip = server.ip;
+        let target_ip = server.ipnet.addr();
         let id = server.id;
         thread::spawn(move || match TcpListener::bind((target_ip, target_port)) {
             Ok(listener1) => {

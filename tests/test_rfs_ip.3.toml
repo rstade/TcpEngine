@@ -11,12 +11,12 @@ ports       = [
 
 [engine]
 engine       = { mode= "SimpleProxy", port=999, timeouts= { established= 1800 }, detailed_records= true }
-targets     = [ { id = "S1", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12345 },
-                { id = "S2", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12346 },
-                { id = "S3", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12347 },
-                { id = "S4", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12348 },
-                { id = "S5", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12349 },
-                { id = "S6", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12350 },
-                { id = "S7", ip = "192.168.222.100", linux_if="enp114s0f1" , port= 12351 },
+targets     = [ { id = "S1", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port= 12345 },
+                { id = "S2", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port= 12346 },
+                { id = "S3", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port= 12347 },
+                { id = "S4", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port= 12348 },
+                { id = "S5", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port= 12349 },
+                { id = "S6", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port= 12350 },
+                { id = "S7", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port= 12351 },
               ]
 test_size     = 8

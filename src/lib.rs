@@ -49,13 +49,14 @@ use e2d2::interface::{PmdPort, Pdu, PciQueueType, KniQueueType};
 use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, RunTime, strip_payload};
 use netfcts::utils::Timeouts;
 
-use std::net::Ipv4Addr;
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bincode::serialize_into;
 use e2d2::queues::new_mpsc_queue_pair;
+use ipnet::Ipv4Net;
 use rand::Rng;
 use netfcts::recstore::{Extension, Store64};
 use netfcts::system::{get_mac_from_ifname};
@@ -198,15 +199,168 @@ where
     Ok(mac)
 }
 
+fn deserialize_ipv4net<'de, D>(deserializer: D) -> Result<Ipv4Net, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ipv4Net::from_str(&s).map_err(serde::de::Error::custom)
+}
+
 #[derive(Deserialize, Clone)]
 pub struct TargetConfig {
     pub id: String,
-    pub ip: Ipv4Addr,
+    #[serde(deserialize_with = "deserialize_ipv4net")]
+    pub ipnet: Ipv4Net,
     #[serde(default, deserialize_with = "deserialize_mac_opt")]
     pub mac: Option<MacAddr6>,
     pub linux_if: Option<String>,
     pub port: u16,
 }
+
+#[derive(Debug)]
+pub enum InterfaceConfigError {
+    CommandFailed(String),
+    NoInterface(String),
+}
+
+impl std::fmt::Display for InterfaceConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            InterfaceConfigError::CommandFailed(msg) => write!(f, "Command failed: {}", msg),
+            InterfaceConfigError::NoInterface(id) => {
+                write!(f, "No interface specified for target {}", id)
+            }
+        }
+    }
+}
+
+impl std::error::Error for InterfaceConfigError {}
+
+/// Check if an IP address is already assigned to an interface
+fn is_ip_assigned(interface: &str, ipnet: Ipv4Net) -> Result<bool, InterfaceConfigError> {
+    let output = Command::new("ip")
+        .args(&["addr", "show", "dev", interface])
+        .output()
+        .map_err(|e| InterfaceConfigError::CommandFailed(format!("Failed to execute 'ip addr show': {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(InterfaceConfigError::CommandFailed(
+            format!("ip addr show failed: {}", stderr)
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Check if the IP appears in the output (with or without prefix)
+    // Format in output is typically "inet 192.168.1.10/24"
+    let ip_str = ipnet.to_string();
+    Ok(stdout.contains(&format!("inet {}", ip_str)))
+}
+
+/// Adds an IP address to a network interface
+fn add_ip_address(interface: &str, ipnet: Ipv4Net) -> Result<(), InterfaceConfigError> {
+    let ip_with_prefix = format!("{}", ipnet);
+
+    // Check if IP is already assigned
+    if is_ip_assigned(interface, ipnet)? {
+        println!("  ℹ IP {} already assigned to interface {}", ipnet, interface);
+        return Ok(());
+    }
+
+    println!("  Adding IP {} to interface {}", ip_with_prefix, interface);
+
+    let output = Command::new("ip")
+        .args(&["addr", "add", &ip_with_prefix, "dev", interface])
+        .output()
+        .map_err(|e| InterfaceConfigError::CommandFailed(format!("Failed to execute 'ip addr add': {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(InterfaceConfigError::CommandFailed(
+            format!("ip addr add failed: {}", stderr)
+        ));
+    }
+
+    println!("    ✓ IP address added");
+    Ok(())
+}
+
+/// Brings a network interface up
+fn bring_interface_up(interface: &str) -> Result<(), InterfaceConfigError> {
+    println!("  Bringing interface {} up", interface);
+
+    let output = Command::new("ip")
+        .args(&["link", "set", interface, "up"])
+        .output()
+        .map_err(|e| InterfaceConfigError::CommandFailed(format!("Failed to execute 'ip link set up': {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(InterfaceConfigError::CommandFailed(
+            format!("ip link set up failed: {}", stderr)
+        ));
+    }
+
+    println!("    ✓ Interface is up");
+    Ok(())
+}
+
+//// Configures network interfaces from a vector of TargetConfig
+///
+/// # Arguments
+/// * `targets` - Vector of TargetConfig entries
+/// * `prefix_len` - Network prefix length (e.g., 24 for /24)
+///
+/// # Returns
+/// * `Ok(())` if all interfaces were configured successfully
+/// * `Err()` with details about the first failure
+pub fn configure_interfaces(targets: &[TargetConfig]) -> Result<(), InterfaceConfigError> {
+    use std::collections::HashSet;
+
+    println!("\n🔧 Configuring Local Network Interfaces");
+    println!("========================================\n");
+
+    // Track what we've already configured: (interface, ip)
+    let mut configured: HashSet<(String, Ipv4Net)> = HashSet::new();
+    let mut interfaces_brought_up: HashSet<String> = HashSet::new();
+
+    for target in targets {
+        println!("📡 Target: {} ({}:{})", target.id, target.ipnet, target.port);
+
+        if let Some(ref interface) = target.linux_if {
+            let config_key = (interface.clone(), target.ipnet);
+
+            // Check if we've already configured this interface-IP pair
+            if configured.contains(&config_key) {
+                println!("  ℹ Interface {} with IP {} already configured, skipping\n",
+                         interface, target.ipnet);
+                continue;
+            }
+
+            // Add IP address
+            add_ip_address(interface, target.ipnet)?;
+            configured.insert(config_key);
+
+            // Bring interface up (only once per interface)
+            if !interfaces_brought_up.contains(interface) {
+                bring_interface_up(interface)?;
+                interfaces_brought_up.insert(interface.clone());
+            } else {
+                println!("  ℹ Interface {} already up\n", interface);
+            }
+
+            println!("  ✅ Configuration complete\n");
+        } else {
+            println!("  ⚠ No interface specified, skipping\n");
+        }
+    }
+
+    println!("✅ All interfaces configured successfully\n");
+    Ok(())
+}
+
+
 
 /// This function is called once by each scheduler running as an independent thread on each active core when the RunTime installs the pipelines.
 /// Currently it iterates through all physical ports which use the respective core and sets up the network function graph (NFG) of the engine for that port and that core.
@@ -261,7 +415,7 @@ pub fn get_server_addresses(configuration: &Configuration) -> Vec<L234Data> {
             mac: srv_cfg
                 .mac
                 .unwrap_or_else(|| get_mac_from_ifname(srv_cfg.linux_if.as_ref().unwrap()).unwrap()),
-            ip: u32::from(srv_cfg.ip),
+            ip: u32::from(srv_cfg.ipnet.addr()),
             port: srv_cfg.port,
             server_id: srv_cfg.id.clone(),
             index: i,
@@ -303,7 +457,7 @@ pub fn get_tcp_generator_nfg() -> impl FnNetworkFunctionGraph {
             p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
             return tcp_payload_size(p);
         }
-        return 0;
+        0
     }
 
     move |core: i32,

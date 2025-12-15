@@ -1,7 +1,7 @@
 use e2d2::interface::{Pdu, HeaderStack};
 use tcp_lib::netfcts::comm::{MessageFrom, PipelineId};
 use tcp_lib::netfcts::conrecord::ConRecord;
-use tcp_lib::{Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg, install_pipelines_for_all_cores};
+use tcp_lib::{Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg, install_pipelines_for_all_cores, configure_interfaces};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -25,6 +25,19 @@ pub fn main() {
     let (mut runtime, mode, running) = initialize_engine(false);
 
     let run_configuration = runtime.run_configuration.clone();
+
+    // Option 1: Stop on first error
+    match configure_interfaces(&*run_configuration.engine_configuration.targets) {
+        Ok(_) => println!("Success!"),
+        Err(e) => {
+            eprintln!("❌ Failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+
+
+
     let run_configuration_cloned = run_configuration.clone();
     let nr_connections = run_configuration.engine_configuration.test_size.unwrap_or(128);
 
