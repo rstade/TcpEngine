@@ -27,10 +27,7 @@ pub struct Profiler {
 impl Profiler {
     pub fn new(labels: &[&str], capacity: usize, warm_up: u64) -> Self {
         let cap = capacity as u64;
-        let time_adders = labels
-            .iter()
-            .map(|l| TimeAdder::new_with_warm_up(l, cap, warm_up))
-            .collect();
+        let time_adders = labels.iter().map(|l| TimeAdder::new_with_warm_up(l, cap, warm_up)).collect();
         Self {
             time_adders,
             rx_tx_stats: Vec::with_capacity(capacity.min(100_000)),
@@ -38,7 +35,9 @@ impl Profiler {
     }
 
     #[inline]
-    pub fn start(&self) -> u64 { unsafe { _rdtsc() } }
+    pub fn start(&self) -> u64 {
+        unsafe { _rdtsc() }
+    }
 
     #[inline]
     pub fn add_diff(&mut self, label_idx: usize, start_tsc: u64) {
@@ -78,13 +77,21 @@ pub struct Profiler;
 
 #[cfg(not(feature = "profiling"))]
 impl Profiler {
-    pub fn new(_labels: &[&str], _capacity: usize, _warm_up: u64) -> Self { Self }
+    pub fn new(_labels: &[&str], _capacity: usize, _warm_up: u64) -> Self {
+        Self
+    }
     #[inline]
-    pub fn start(&self) -> u64 { 0 }
+    pub fn start(&self) -> u64 {
+        0
+    }
     #[inline]
     pub fn add_diff(&mut self, _label_idx: usize, _start_tsc: u64) {}
     #[inline]
     pub fn record_rx_tx_if_changed(&mut self, _now_tsc: u64, _rx: u64, _tx: u64) {}
-    pub fn snapshot_rx_tx(&self) -> Option<&Vec<(u64, u64, u64)>> { None }
-    pub fn into_rx_tx(self) -> Option<Vec<(u64, u64, u64)>> { None }
+    pub fn snapshot_rx_tx(&self) -> Option<&Vec<(u64, u64, u64)>> {
+        None
+    }
+    pub fn into_rx_tx(self) -> Option<Vec<(u64, u64, u64)>> {
+        None
+    }
 }

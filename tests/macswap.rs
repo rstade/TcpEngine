@@ -34,7 +34,6 @@ pub fn nf_macswap<T: 'static + Batch>(parent: T) -> TransformBatch<T> {
     }))
 }
 
-
 fn test<S>(ports: HashSet<CacheAligned<PortQueue>>, sched: &mut S, _core: i32)
 where
     S: Scheduler + Sized,

@@ -2,8 +2,10 @@ use crate::netfcts::tcp_common::TcpCounter;
 use separator::Separatable;
 use std::ptr;
 use e2d2::native::zcsi::*;
-use e2d2::native::zcsi::rte_ethdev_api::{rte_eth_stats_get, rte_eth_xstats_get_names_by_id, rte_eth_xstats_get_by_id,
-                                     rte_eth_xstats_get_id_by_name, rte_eth_stats, rte_eth_xstat_name};
+use e2d2::native::zcsi::rte_ethdev_api::{
+    rte_eth_stats_get, rte_eth_xstats_get_names_by_id, rte_eth_xstats_get_by_id, rte_eth_xstats_get_id_by_name,
+    rte_eth_stats, rte_eth_xstat_name,
+};
 use crate::netfcts::comm::PipelineId;
 
 pub fn print_hard_statistics(port_id: u16) -> i32 {

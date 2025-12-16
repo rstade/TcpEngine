@@ -203,11 +203,7 @@ impl HasTcpState for ConRecord {
 
     #[inline]
     fn get_first_stamp(&self) -> Option<u64> {
-        if self.state_count > 0 {
-            Some(self.base_stamp)
-        } else {
-            None
-        }
+        if self.state_count > 0 { Some(self.base_stamp) } else { None }
     }
 
     fn deltas_to_base_stamp(&self) -> Vec<u32> {

@@ -28,8 +28,16 @@ pub fn print_performance_from_stamps(
     let mut min_t: u64 = 0;
     let mut max_t: u64 = 0;
     for (p, (t_start, t_stop)) in &start_stop_stamps {
-        if min_t == 0 { min_t = *t_start } else { min_t = cmp::min(min_t, *t_start) }
-        if max_t == 0 { max_t = *t_stop } else { max_t = cmp::max(max_t, *t_stop) }
+        if min_t == 0 {
+            min_t = *t_start
+        } else {
+            min_t = cmp::min(min_t, *t_start)
+        }
+        if max_t == 0 {
+            max_t = *t_stop
+        } else {
+            max_t = cmp::max(max_t, *t_stop)
+        }
         let per_connection = (*t_stop - *t_start) / nr_connections as u64;
         let cps = cpu_clock / per_connection;
         println!(
@@ -43,8 +51,12 @@ pub fn print_performance_from_stamps(
 
     let mut stats = rte_eth_stats::new();
     let retval;
-    unsafe { retval = rte_eth_stats_get(1u16, &mut stats); }
-    if retval != 0 { panic!("rte_eth_stats_get failed"); }
+    unsafe {
+        retval = rte_eth_stats_get(1u16, &mut stats);
+    }
+    if retval != 0 {
+        panic!("rte_eth_stats_get failed");
+    }
 
     let per_connection = (max_t - min_t) / nr_connections as u64 / start_stop_stamps.len() as u64;
     let per_packet = (max_t - min_t) / (stats.ipackets + stats.opackets);
@@ -100,21 +112,18 @@ pub fn evaluate_records(
                         .expect("cannot write c_records");
                 }
 
-                if is_client_completed(client_rec) { completed_count_c += 1 }
+                if is_client_completed(client_rec) {
+                    completed_count_c += 1
+                }
 
-                if client_rec.get_first_stamp().unwrap_or(u64::MAX)
-                    < min_pipe.get_first_stamp().unwrap_or(u64::MAX)
-                {
+                if client_rec.get_first_stamp().unwrap_or(u64::MAX) < min_pipe.get_first_stamp().unwrap_or(u64::MAX) {
                     min_pipe = client_rec.clone();
                 }
                 if client_rec.get_last_stamp().unwrap_or(0) > max_pipe.get_last_stamp().unwrap_or(0) {
                     max_pipe = client_rec.clone();
                 }
 
-                if i == (count - 1)
-                    && min_pipe.get_first_stamp().is_some()
-                    && max_pipe.get_last_stamp().is_some()
-                {
+                if i == (count - 1) && min_pipe.get_first_stamp().is_some() && max_pipe.get_last_stamp().is_some() {
                     let total = max_pipe.get_last_stamp().unwrap() - min_pipe.get_first_stamp().unwrap();
                     println!(
                         "{}: total used cycles = {}, per connection = {} ({} cps)",
@@ -127,13 +136,14 @@ pub fn evaluate_records(
             });
 
             // Track min/max over all pipelines
-            if min_total.is_none() || min_pipe.get_first_stamp().unwrap_or(u64::MAX)
-                < min_total.as_ref().unwrap().get_first_stamp().unwrap_or(u64::MAX)
+            if min_total.is_none()
+                || min_pipe.get_first_stamp().unwrap_or(u64::MAX)
+                    < min_total.as_ref().unwrap().get_first_stamp().unwrap_or(u64::MAX)
             {
                 min_total = Some(min_pipe);
             }
-            if max_total.is_none() || max_pipe.get_last_stamp().unwrap_or(0)
-                > max_total.as_ref().unwrap().get_last_stamp().unwrap_or(0)
+            if max_total.is_none()
+                || max_pipe.get_last_stamp().unwrap_or(0) > max_total.as_ref().unwrap().get_last_stamp().unwrap_or(0)
             {
                 max_total = Some(max_pipe);
             }
@@ -159,9 +169,7 @@ pub fn evaluate_records(
     f.flush().expect("cannot flush BufWriter");
 }
 
-fn index_server_records(
-    con_records_s: &Vec<(PipelineId, Store64<Extension>)>,
-) -> (HashMap<u64, ConRecord>, usize) {
+fn index_server_records(con_records_s: &Vec<(PipelineId, Store64<Extension>)>) -> (HashMap<u64, ConRecord>, usize) {
     let total_capacity: usize = con_records_s.iter().map(|c| c.1.len()).sum();
     let mut by_uuid = HashMap::with_capacity(total_capacity);
     let mut completed_count_s = 0;
@@ -169,9 +177,7 @@ fn index_server_records(
     for (_, c_records_server) in con_records_s {
         c_records_server.iter().for_each(|(crec, _ext)| {
             // Count only fully completed server-side connections
-            if crec.release_cause() == ReleaseCause::ActiveClose
-                && crec.states().last().unwrap() == &TcpState::Closed
-            {
+            if crec.release_cause() == ReleaseCause::ActiveClose && crec.states().last().unwrap() == &TcpState::Closed {
                 completed_count_s += 1
             };
             by_uuid.insert(crec.uid(), crec.clone());
@@ -209,8 +215,7 @@ fn format_server_details(c_server: &ConRecord, c_client: &ConRecord) -> String {
 }
 
 fn is_client_completed(c: &ConRecord) -> bool {
-    (c.release_cause() == ReleaseCause::PassiveClose
-        || c.release_cause() == ReleaseCause::ActiveClose)
+    (c.release_cause() == ReleaseCause::PassiveClose || c.release_cause() == ReleaseCause::ActiveClose)
         && c.states().last().unwrap() == &TcpState::Closed
 }
 
@@ -236,10 +241,7 @@ impl CollectedData {
 
 /// Collect replies from the main reply channel into convenient structures.
 /// This unifies the duplicated receive loops in bin.rs and run_test.rs.
-pub fn collect_from_main_reply(
-    reply_mrx: &Receiver<MessageTo<Store64<Extension>>>,
-    timeout_ms: u64,
-) -> CollectedData {
+pub fn collect_from_main_reply(reply_mrx: &Receiver<MessageTo<Store64<Extension>>>, timeout_ms: u64) -> CollectedData {
     let mut data = CollectedData::new();
 
     loop {

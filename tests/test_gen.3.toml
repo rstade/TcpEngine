@@ -17,12 +17,12 @@ ports       = [
 
 engine      = {  mode="TrafficGenerator", port=999, timeouts= { established= 10000 }, cps_limit= 100000, detailed_records= true, fin_by_client= 3, fin_by_server= 3 }
 
-targets     = [ { id = "server 1", ip = "192.168.222.100", linux_if="enp114s0f1" , port = 12345 },
-                { id = "server 2", ip = "192.168.222.100", linux_if="enp114s0f1" , port = 12346 },
-                { id = "server 3", ip = "192.168.222.100", linux_if="enp114s0f1" , port = 12347 },
-                { id = "server 4", ip = "192.168.222.100", linux_if="enp114s0f1" , port = 12348 },
-                { id = "server 5", ip = "192.168.222.100", linux_if="enp114s0f1" , port = 12349 },
-                { id = "server 6", ip = "192.168.222.100", linux_if="enp114s0f1" , port = 12350 },
-                { id = "server 7", ip = "192.168.222.100", linux_if="enp114s0f1" , port = 12351 },
+targets     = [ { id = "server 1", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port = 12345 },
+                { id = "server 2", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port = 12346 },
+                { id = "server 3", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port = 12347 },
+                { id = "server 4", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port = 12348 },
+                { id = "server 5", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port = 12349 },
+                { id = "server 6", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port = 12350 },
+                { id = "server 7", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port = 12351 },
               ]
 test_size   = 20

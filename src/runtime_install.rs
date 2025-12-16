@@ -24,16 +24,8 @@ where
 {
     let run_configuration_cloned = run_configuration.clone();
     runtime.install_pipeline_on_cores(Box::new(
-        move |core: i32,
-              pmd_ports: HashMap<String, Arc<PmdPort>>,
-              s: &mut StandaloneScheduler| {
-            setup_pipelines(
-                core,
-                pmd_ports,
-                s,
-                run_configuration_cloned.clone(),
-                &nfg.clone(),
-            );
+        move |core: i32, pmd_ports: HashMap<String, Arc<PmdPort>>, s: &mut StandaloneScheduler| {
+            setup_pipelines(core, pmd_ports, s, run_configuration_cloned.clone(), &nfg.clone());
         },
     ))
 }

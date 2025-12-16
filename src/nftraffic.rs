@@ -13,7 +13,6 @@ use uuid::Uuid;
 use bincode::{deserialize};
 use separator::Separatable;
 
-
 use crate::tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
 use crate::{get_server_addresses, Configuration};
 
@@ -37,7 +36,6 @@ use std::convert::TryFrom;
 use crate::netfcts::comm::PipelineId;
 use crate::netfcts::recstore::{Extension, Store64};
 use crate::profiling::Profiler;
-
 
 const MIN_FRAME_SIZE: usize = 60;
 
@@ -120,7 +118,6 @@ pub fn setup_generator<FPL>(
         }
     }
 
-
     // setting up a reverse message channel between this pipeline and the main program thread
     debug!("{} setting up reverse channel", pipeline_id);
     let (remote_tx, rx) = channel::<MessageTo<Store64<Extension>>>();
@@ -175,11 +172,7 @@ pub fn setup_generator<FPL>(
 
         #[inline]
         fn mean(&self) -> u64 {
-            if self.count > 0 {
-                self.sum / self.count
-            } else {
-                0
-            }
+            if self.count > 0 { self.sum / self.count } else { 0 }
         }
 
         #[inline]
@@ -212,7 +205,6 @@ pub fn setup_generator<FPL>(
     tx.send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::TcpGenerator))
         .unwrap();
     let syn_injector_ready_flag = sched.get_ready_flag(&injector_uuid).unwrap();
-
 
     let (payload_producer, payload_consumer) = new_mpsc_queue_pair_with_size(64);
     let injector_uuid = install_task(
@@ -270,18 +262,18 @@ pub fn setup_generator<FPL>(
     #[cfg(feature = "profiling")]
     let mut profiler = {
         let labels = [
-            "cmanager_c",        // 0
-            "s_recv_syn",        // 1
-            "s_recv_syn_ack2",   // 2
-            "s_recv_payload",    // 3
-            "c_sent_syn",        // 4
-            "c_sent_payload",    // 5
-            "c_recv_syn_ack",    // 6
-            "c_recv_fin",        // 7
-            "s_recv_fin",        // 8
-            "c_release_con",     // 9
-            "s_release_con",     //10
-            "cmanager_s",        //11
+            "cmanager_c",      // 0
+            "s_recv_syn",      // 1
+            "s_recv_syn_ack2", // 2
+            "s_recv_payload",  // 3
+            "c_sent_syn",      // 4
+            "c_sent_payload",  // 5
+            "c_recv_syn_ack",  // 6
+            "c_recv_fin",      // 7
+            "s_recv_fin",      // 8
+            "c_release_con",   // 9
+            "s_release_con",   //10
+            "cmanager_s",      //11
         ];
         // capacity heuristic based on test size
         let cap = (nr_connections as usize).saturating_mul(2).min(20_000);
@@ -967,7 +959,10 @@ pub fn setup_generator<FPL>(
                             if diff > 0 {
                                 warn!(
                                     "{} client: unexpected sequence number (packet loss?) in state {:?}, seqn differs by {}\ntcp = { }",
-                                    thread_id, old_c_state, diff, pdu.headers().tcp(2)
+                                    thread_id,
+                                    old_c_state,
+                                    diff,
+                                    pdu.headers().tcp(2)
                                 );
                             } else {
                                 debug!(

@@ -51,17 +51,9 @@ TASK=${1:-all}
 
 case "$TASK" in
   # the following first targets are testing the TcpEngine as mode=DelayedProxyEngine or SimpleProxyEngine
-  test_rfs_ip)
-    build_and_run test_tcp_proxy ./tests/test_rfs_ip.toml "tcp_lib=info,test_tcp_proxy=debug,e2d2=info" "${@:2}"
-    ;;
-  test_rfs_ip.2)
-    build_and_run test_tcp_proxy ./tests/test_rfs_ip.2.toml "tcp_lib=info,test_tcp_proxy=info,e2d2=info" "${@:2}"
-    ;;
+
   test_rfs_ip.3)
     build_and_run test_tcp_proxy ./tests/test_rfs_ip.3.toml "tcp_lib=info,test_tcp_proxy=info,e2d2=info" "${@:2}"
-    ;;
-  test_rfs_port)
-    build_and_run test_tcp_proxy ./tests/test_rfs_port.toml "tcp_lib=debug,test_tcp_proxy=debug,e2d2=info,netfcts=debug" "${@:2}"
     ;;
   test_rfs_port.3)
       build_and_run test_tcp_proxy ./tests/test_rfs_port.3.toml "tcp_lib=info,test_tcp_proxy=info,e2d2=debug" "${@:2}"
@@ -72,34 +64,16 @@ case "$TASK" in
   timeout.2)
     build_and_run timeout ./tests/timeout.2.toml "tcp_lib=info,timeout=info,e2d2=info" "${@:2}"
     ;;
-  client_syn_fin)
-    build_and_run client_syn_fin ./tests/client_syn_fin.toml "tcp_lib=info,client_syn_fin=info,e2d2=info" "${@:2}"
-    ;;
-  client_syn_fin.2)
-    build_and_run client_syn_fin ./tests/client_syn_fin.2.toml "tcp_lib=info,client_syn_fin=info,e2d2=info" "${@:2}"
-    ;;
   client_syn_fin.3)
     build_and_run client_syn_fin ./tests/client_syn_fin.3.toml "tcp_lib=info,client_syn_fin=debug,e2d2=info" "${@:2}"
     ;;
   ## the following targets are testing the TcpEngine as mode=TrafficEngine
-  test_as_client)
-    build_and_run test_as_client ./tests/test_gen.toml "tcp_lib=debug,e2d2=debug" "${@:2}"
-    ;;
-  test_as_server)
-    build_and_run test_as_server ./tests/test_gen.toml "tcp_lib=info,e2d2=info" "${@:2}"
-    ;;
   macswap)
     build_and_run macswap ./tests/macswap.toml "tcp_lib=info,macswap=info,e2d2=info" "${@:2}"
-    ;;
-  test_as_client.2)
-    build_and_run test_as_client ./tests/test_gen.2.toml "tcp_lib=info,e2d2=info" "${@:2}"
     ;;
   test_as_client.3)
       build_and_run test_as_client ./tests/test_gen.3.toml "tcp_lib=info,e2d2=info" "${@:2}"
       ;;
-  test_as_server.2)
-    build_and_run test_as_server ./tests/test_gen.2.toml "tcp_lib=info,e2d2=info" "${@:2}"
-    ;;
   test_as_server.3)
       build_and_run test_as_server ./tests/test_gen.3.toml "tcp_lib=info,e2d2=info" "${@:2}"
       ;;

@@ -145,11 +145,7 @@ impl<'a> ProxyConnection {
     #[inline]
     pub fn sock(&self) -> Option<(u32, u16)> {
         let s = (self.client_ip, self.client_port);
-        if s.0 != 0 {
-            Some(s)
-        } else {
-            None
-        }
+        if s.0 != 0 { Some(s) } else { None }
     }
 
     #[inline]
@@ -415,11 +411,7 @@ impl ConnectionManager {
         if self.owns_tcp_port(port) {
             let c = self.get_mut_con(&port);
             // check if c is in use
-            if c.in_use() {
-                Some(c)
-            } else {
-                None
-            }
+            if c.in_use() { Some(c) } else { None }
         } else {
             None
         }

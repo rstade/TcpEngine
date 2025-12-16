@@ -37,8 +37,7 @@ pub fn spawn_test_servers(fin_by_client: usize, targets: Vec<TargetConfig>) -> V
                         let nr_bytes = stream
                             .read(&mut buffer[..])
                             .expect(&format!("cannot read from stream {}", stream.peer_addr().unwrap()));
-                        let cdata: CData =
-                            bincode::deserialize(&buffer[0..nr_bytes]).expect("cannot deserialize cdata");
+                        let cdata: CData = bincode::deserialize(&buffer[0..nr_bytes]).expect("cannot deserialize cdata");
                         debug!("{} received {:?} from: {}", id, cdata, stream.peer_addr().unwrap());
                         stream.write(&"Thank you".as_bytes()).expect("cannot write to stream");
                         for i in 1..fin_by_client {
@@ -52,10 +51,7 @@ pub fn spawn_test_servers(fin_by_client: usize, targets: Vec<TargetConfig>) -> V
                     }
                 }
                 _ => {
-                    panic!(
-                        "failed to bind server {} to {}:{}",
-                        id, target_ip, target_port
-                    );
+                    panic!("failed to bind server {} to {}:{}", id, target_ip, target_port);
                 }
             })
         })

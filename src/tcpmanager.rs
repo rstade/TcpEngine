@@ -110,11 +110,7 @@ impl Connection {
     #[inline]
     pub fn sock(&self) -> Option<(u32, u16)> {
         let s = (self.client_ip, self.client_port);
-        if self.in_use() {
-            Some(s)
-        } else {
-            None
-        }
+        if self.in_use() { Some(s) } else { None }
     }
 
     #[inline]
@@ -145,7 +141,6 @@ impl Connection {
         }
         self.server_index = index as u8;
     }
-
 
     #[inline]
     pub fn set_release_cause(&mut self, cause: ReleaseCause) {
@@ -190,7 +185,6 @@ impl Connection {
         }
     }
 
-
     #[inline]
     pub fn set_uid(&mut self, uid: u64) {
         if self.record.is_some() {
@@ -218,7 +212,6 @@ pub struct DetailedRecord {
     con_rec: Option<usize>,
     store: Option<Rc<RefCell<Store64<Extension>>>>,
 }
-
 
 impl DetailedRecord {
     #[inline]
@@ -253,13 +246,11 @@ impl DetailedRecord {
     }
 }
 
-
 impl fmt::Debug for DetailedRecord {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(f, "DetailedRecord= {:?}", self.store().borrow().get(self.con_rec()))
     }
 }
-
 
 impl ConRecordOperations<Store64<Extension>> for DetailedRecord {
     #[inline]
@@ -372,7 +363,6 @@ impl ConnectionManagerC {
         self.available_ports_count
     }
 
-
     #[inline]
     fn get_mut_con(&mut self, p: &u16) -> &mut Connection {
         &mut self.port2con[(p - self.tcp_port_base) as usize]
@@ -426,11 +416,7 @@ impl ConnectionManagerC {
         if self.owns_tcp_port(port) {
             let c = self.get_mut_con(&port);
             // check if c is in use
-            if c.in_use() {
-                Some(c)
-            } else {
-                None
-            }
+            if c.in_use() { Some(c) } else { None }
         } else {
             None
         }

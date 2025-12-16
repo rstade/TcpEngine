@@ -252,30 +252,38 @@ fn delayed_binding_proxy() {
                 completed_count_c += 1
             };
             assert!(
-                c.states() == [
+                c.states()
+                    == [
                         TcpState::Closed,
                         TcpState::SynSent,
                         TcpState::Established,
                         TcpState::FinWait1,
                         TcpState::Closed
                     ]
-                    ||
-                c.states() == [
-                        TcpState::Closed,
-                        TcpState::SynSent,
-                        TcpState::Established,
-                        TcpState::FinWait1,
-                        TcpState::FinWait2,
-                        TcpState::Closed
-                    ],
+                    || c.states()
+                        == [
+                            TcpState::Closed,
+                            TcpState::SynSent,
+                            TcpState::Established,
+                            TcpState::FinWait1,
+                            TcpState::FinWait2,
+                            TcpState::Closed
+                        ],
             );
         }
         for c in con_recs.iter_1() {
             if c.release_cause() == ReleaseCause::PassiveClose && c.last_state() == TcpState::Closed {
                 completed_count_s += 1
             };
-            if (mode == EngineMode::DelayedProxy ) { assert_eq!(c.states(), [TcpState::Listen, TcpState::LastAck, TcpState::Closed]) };
-            if (mode == EngineMode::SimpleProxy ) { assert_eq!(c.states()[0..3], [TcpState::Listen, TcpState::SynReceived, TcpState::Established]) };
+            if (mode == EngineMode::DelayedProxy) {
+                assert_eq!(c.states(), [TcpState::Listen, TcpState::LastAck, TcpState::Closed])
+            };
+            if (mode == EngineMode::SimpleProxy) {
+                assert_eq!(
+                    c.states()[0..3],
+                    [TcpState::Listen, TcpState::SynReceived, TcpState::Established]
+                )
+            };
         }
     }
 

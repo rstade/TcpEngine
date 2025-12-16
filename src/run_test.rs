@@ -25,7 +25,6 @@ use {crate::initialize_engine, crate::ReleaseCause};
 use {crate::TcpState, crate::TcpStatistics};
 use crate::analysis::collect_from_main_reply;
 
-
 // Centralized test timing constants
 const STARTUP_DELAY_MS: u64 = 1000;
 const SERVER_READY_DELAY_MS: u64 = 1000;
@@ -34,7 +33,6 @@ const PRINT_DELAY_MS: u64 = 100;
 const REPLY_TIMEOUT_MS: u64 = 1000;
 const SHUTDOWN_POLL_MS: u64 = 100;
 const SHUTDOWN_MAX_WAIT_MS: u64 = 5000;
-
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TestType {
@@ -67,7 +65,6 @@ pub fn run_test(test_type: TestType) {
 
     install_pipelines_for_all_cores(&mut runtime, run_configuration_cloned, get_tcp_generator_nfg())
         .expect("cannot install pipelines");
-
 
     let mut pci = None;
     let mut kni = None;
@@ -117,9 +114,7 @@ pub fn run_test(test_type: TestType) {
     thread::sleep(Duration::from_millis(STARTUP_DELAY_MS));
 
     // Get exit notification receiver to detect early runtime thread termination
-    let exit_rx = runtime
-        .take_exit_receiver()
-        .expect("no exit receiver available");
+    let exit_rx = runtime.take_exit_receiver().expect("no exit receiver available");
 
     // Helper to detect early runtime termination (used before stats collection)
     fn runtime_exit_triggered(exit_rx: &Receiver<RuntimeExit>) -> bool {
@@ -137,12 +132,16 @@ pub fn run_test(test_type: TestType) {
         let deadline = Instant::now() + Duration::from_millis(SHUTDOWN_MAX_WAIT_MS);
         loop {
             // break if runtime reported exit or channel closed
-            if matches!(exit_rx.try_recv(), Ok(_) | Err(TryRecvError::Disconnected)) { break; }
+            if matches!(exit_rx.try_recv(), Ok(_) | Err(TryRecvError::Disconnected)) {
+                break;
+            }
             match reply_mrx.recv_timeout(Duration::from_millis(SHUTDOWN_POLL_MS)) {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if Instant::now() >= deadline { break; }
+            if Instant::now() >= deadline {
+                break;
+            }
         }
     }
 
@@ -151,16 +150,11 @@ pub fn run_test(test_type: TestType) {
         #[cfg(any(test, feature = "test-support"))]
         {
             use crate::test_support::spawn_test_servers;
-            let _handles = spawn_test_servers(
-                fin_by_client,
-                run_configuration.engine_configuration.targets.clone(),
-            );
+            let _handles = spawn_test_servers(fin_by_client, run_configuration.engine_configuration.targets.clone());
         }
         #[cfg(not(any(test, feature = "test-support")))]
         {
-            warn!(
-                "feature 'test-support' not enabled; skipping local servers for Client test"
-            );
+            warn!("feature 'test-support' not enabled; skipping local servers for Client test");
         }
 
         thread::sleep(Duration::from_millis(SERVER_READY_DELAY_MS)); // wait for the servers
@@ -332,22 +326,32 @@ pub fn run_test(test_type: TestType) {
     {
         use crate::netfcts::tcp_common::TcpStatistics as TS;
         let (map, a1, b1, a2, b2) = if test_type == TestType::Server {
-            (&tcp_counters_from, TS::RecvSyn, TS::SentSynAck, TS::SentSynAck, TS::RecvSynAck2)
+            (
+                &tcp_counters_from,
+                TS::RecvSyn,
+                TS::SentSynAck,
+                TS::SentSynAck,
+                TS::RecvSynAck2,
+            )
         } else {
-            (&tcp_counters_to, TS::SentSyn, TS::SentSynAck2, TS::SentSynAck2, TS::RecvSynAck)
+            (
+                &tcp_counters_to,
+                TS::SentSyn,
+                TS::SentSynAck2,
+                TS::SentSynAck2,
+                TS::RecvSynAck,
+            )
         };
 
         for (p, _) in map {
             assert_eq!(map.get(&p).unwrap()[a1], map.get(&p).unwrap()[b1]);
             assert_eq!(map.get(&p).unwrap()[a2], map.get(&p).unwrap()[b2]);
             assert!(
-                map.get(&p).unwrap()[TS::RecvFin]
-                    + map.get(&p).unwrap()[TS::RecvFinPssv]
+                map.get(&p).unwrap()[TS::RecvFin] + map.get(&p).unwrap()[TS::RecvFinPssv]
                     <= map.get(&p).unwrap()[TS::SentAck4Fin]
             );
             assert!(
-                map.get(&p).unwrap()[TS::SentFinPssv]
-                    + map.get(&p).unwrap()[TS::SentFin]
+                map.get(&p).unwrap()[TS::SentFinPssv] + map.get(&p).unwrap()[TS::SentFin]
                     <= map.get(&p).unwrap()[TS::RecvAck4Fin]
             );
         }
@@ -366,7 +370,10 @@ pub fn run_test(test_type: TestType) {
     drop(runtime);
     info!("Shutdown: dropped runtime (remaining local sender clone released)");
     // Wait bounded time for the runtime thread to terminate by observing the reply channel closing
-    info!("Shutdown: waiting for runtime thread to terminate (<= {} ms)", SHUTDOWN_MAX_WAIT_MS);
+    info!(
+        "Shutdown: waiting for runtime thread to terminate (<= {} ms)",
+        SHUTDOWN_MAX_WAIT_MS
+    );
     await_runtime_shutdown(&reply_mrx, &exit_rx);
     println!("*** *** PASSED *** ***");
     debug!("terminating TcpEngine");

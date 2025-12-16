@@ -116,7 +116,7 @@ impl<'a> PacketInjector {
 
     #[inline]
     pub fn create_packet_from_mbuf(&mut self, mbuf: *mut MBuf) -> Pdu {
-        let p =  self.packet_prototype.copy_use_mbuf(mbuf) ;
+        let p = self.packet_prototype.copy_use_mbuf(mbuf);
         p
     }
 }
@@ -170,8 +170,7 @@ impl<'a> Executable for PacketInjector {
             if inserted != INJECTOR_BATCH_SIZE {
                 warn!(
                     "PacketInjector: enqueued {} of {} packets (queue full?), proceeding",
-                    inserted,
-                    INJECTOR_BATCH_SIZE
+                    inserted, INJECTOR_BATCH_SIZE
                 );
             }
             if inserted > 0 {

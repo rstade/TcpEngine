@@ -8,7 +8,6 @@ pub mod utils;
 pub mod recstore;
 pub mod conrecord;
 
-
 use serde_derive::Deserialize;
 use std::collections::{HashMap, HashSet};
 
@@ -23,15 +22,15 @@ use std::time::Duration;
 use std::thread;
 use std::thread::sleep;
 
-
 use ipnet::Ipv4Net;
 use macaddr::MacAddr6 as MacAddress;
 use uuid::Uuid;
 use separator::Separatable;
 
 use e2d2::allocators::CacheAligned;
-use e2d2::interface::{FlowDirector, FlowSteeringMode, PmdPort, PortQueue, PciQueueType, KniQueueType, PortType, Pdu,
-                  update_tcp_checksum_};
+use e2d2::interface::{
+    FlowDirector, FlowSteeringMode, PmdPort, PortQueue, PciQueueType, KniQueueType, PortType, Pdu, update_tcp_checksum_,
+};
 use e2d2::common::ErrorKind as E2d2ErrorKind;
 use e2d2::common::errors::Result as E2d2Result;
 use e2d2::native::zcsi::{ipv4_phdr_chksum, RteLogLevel, RteLogtype};
@@ -40,8 +39,9 @@ use e2d2::native::zcsi::fdir_get_infos;
 use e2d2::config::{basic_opts, read_matches, NetbricksConfiguration};
 use e2d2::scheduler::{NetBricksContext, initialize_system, SchedulerCommand, SchedulerReply, StandaloneScheduler};
 
-use e2d2::native::zcsi::rte_ethdev_api::{rte_log_set_global_level, rte_log_set_level, rte_log_get_global_level,
-                                     rte_log_get_level};
+use e2d2::native::zcsi::rte_ethdev_api::{
+    rte_log_set_global_level, rte_log_set_level, rte_log_get_global_level, rte_log_get_level,
+};
 use serde::de::DeserializeOwned;
 use self::tcp_common::L234Data;
 use crate::netfcts::comm::{MessageFrom, MessageTo};
@@ -86,7 +86,7 @@ pub struct RunTime<T: Sized + Clone + Send, TStore: SimpleStore + Clone> {
     remote_receiver: Option<Receiver<MessageTo<TStore>>>,
     toml_file: String,
     /// exit notification receiver: main/test can take this to learn when the runtime thread exits
-    exit_receiver: Option<Receiver<RuntimeExit>>, 
+    exit_receiver: Option<Receiver<RuntimeExit>>,
     /// Join handle of the runtime thread for optional joining
     handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -533,7 +533,7 @@ where
                     {
                         Ok(SchedulerReply::PerformanceData(core, map)) => {
                             let mut pairs = map.into_iter().collect::<Vec<_>>();
-                            pairs.sort_by(|a, b| a.1 .0.cmp(&b.1 .0));
+                            pairs.sort_by(|a, b| a.1.0.cmp(&b.1.0));
                             for (_, d) in pairs {
                                 println!(
                                     "{:2}: {:20} {:>15} cycles, count= {:12}, queue length= {}",

@@ -1,7 +1,10 @@
 use e2d2::interface::{Pdu, HeaderStack};
 use tcp_lib::netfcts::comm::{MessageFrom, PipelineId};
 use tcp_lib::netfcts::conrecord::ConRecord;
-use tcp_lib::{Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg, install_pipelines_for_all_cores, configure_interfaces};
+use tcp_lib::{
+    Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg,
+    install_pipelines_for_all_cores, configure_interfaces,
+};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -34,9 +37,6 @@ pub fn main() {
             std::process::exit(1);
         }
     }
-
-
-
 
     let run_configuration_cloned = run_configuration.clone();
     let nr_connections = run_configuration.engine_configuration.test_size.unwrap_or(128);
@@ -321,7 +321,9 @@ pub fn main() {
             Ok(_msg) => {}
             // still waiting
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if Instant::now() >= deadline { break; }
+                if Instant::now() >= deadline {
+                    break;
+                }
             }
         }
     }

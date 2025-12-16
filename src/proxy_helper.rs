@@ -34,25 +34,25 @@ pub const TIMER_WHEEL_SLOT_CAPACITY: usize = 2500;
 
 // Centralized profiler labels used by both proxy variants
 pub const PROXY_PROF_LABELS: &[&str] = &[
-    "c_cmanager_syn",   // 0
-    "s_cmanager",       // 1
-    "c_recv_syn",       // 2
-    "s_recv_syn_ack",   // 3
-    "c_recv_syn_ack2",  // 4
-    "c_recv_1_payload", // 5
-    "c2s_stable",       // 6
-    "s2c_stable",       // 7
+    "c_cmanager_syn",     // 0
+    "s_cmanager",         // 1
+    "c_recv_syn",         // 2
+    "s_recv_syn_ack",     // 3
+    "c_recv_syn_ack2",    // 4
+    "c_recv_1_payload",   // 5
+    "c2s_stable",         // 6
+    "s2c_stable",         // 7
     "c_cmanager_not_syn", // 8
-    "",                 // 9 (reserved)
-    "",                 // 10 (reserved)
-    "",                 // 11 (reserved)
+    "",                   // 9 (reserved)
+    "",                   // 10 (reserved)
+    "",                   // 11 (reserved)
 ];
 
 // ========================= Ingress helpers (shared) =========================
 
 pub enum IngressDecision {
-    Drop,                      // discard (group 0)
-    ToKni,                     // send to KNI (group 2)
+    Drop,  // discard (group 0)
+    ToKni, // send to KNI (group 2)
     Continue { b_private_etype: bool },
 }
 
@@ -77,7 +77,9 @@ pub fn ingress_classify(pdu: &Pdu, me: &Me, pipeline_ip: u32) -> IngressDecision
             return IngressDecision::ToKni;
         }
     }
-    IngressDecision::Continue { b_private_etype: b_private }
+    IngressDecision::Continue {
+        b_private_etype: b_private,
+    }
 }
 
 #[inline]
@@ -90,9 +92,13 @@ pub fn maybe_enable_tx_offload(pdu: &mut Pdu, csum_offload: bool) {
 /// Unified TCP port filter used by both proxies. Returns true if packet passes.
 #[inline]
 pub fn pass_tcp_port_filter(pdu: &Pdu, me: &Me, tcp_min_port: u16, b_private_etype: bool) -> bool {
-    if b_private_etype { return true; }
+    if b_private_etype {
+        return true;
+    }
     let dst = pdu.headers().tcp(2).dst_port();
-    if dst != me.l234.port && dst < tcp_min_port { return false; }
+    if dst != me.l234.port && dst < tcp_min_port {
+        return false;
+    }
     true
 }
 
@@ -158,11 +164,7 @@ pub fn handle_timer_tick(
 /// Common epilogue: release connection state if a port was marked for release.
 /// Resets the `release_port` option after releasing to avoid double-free on re-entry.
 #[inline]
-pub fn release_if_needed(
-    cm: &mut ConnectionManager,
-    wheel: &mut TimerWheel<u16>,
-    release_port: &mut Option<u16>,
-) {
+pub fn release_if_needed(cm: &mut ConnectionManager, wheel: &mut TimerWheel<u16>, release_port: &mut Option<u16>) {
     if let Some(sport) = *release_port {
         trace!("releasing connection on port {}", sport);
         cm.release_port(sport, wheel);
@@ -207,8 +209,7 @@ pub fn forward_established_s2c(
     profiler: Option<&mut Profiler>,
     profile_label_idx: Option<usize>,
     timestamp_entry: Option<u64>,
-) 
-{
+) {
     let sz = tcp_payload_size(p);
     counter_s[TcpStatistics::RecvPayload] += sz;
     server_to_client_common(p, c, me);
@@ -219,8 +220,16 @@ pub fn forward_established_s2c(
     }
 }
 
-pub fn client_sent_fin(tcp: &TcpHeader, old_s_state: TcpState, pdu: &mut Pdu, c: &mut ProxyConnection, counter_c: &mut TcpCounter, counter_s: &mut TcpCounter) {
-    if old_s_state >= TcpState::FinWait1 { // server in active close, client in passive or also active close
+pub fn client_sent_fin(
+    tcp: &TcpHeader,
+    old_s_state: TcpState,
+    pdu: &mut Pdu,
+    c: &mut ProxyConnection,
+    counter_c: &mut TcpCounter,
+    counter_s: &mut TcpCounter,
+) {
+    if old_s_state >= TcpState::FinWait1 {
+        // server in active close, client in passive or also active close
         if tcp.ack_flag() && tcp.ack_num() == unsafe { c.seqn.ack_for_fin_p2c } {
             counter_c[TcpStatistics::RecvFinPssv] += 1;
             counter_s[TcpStatistics::SentFinPssv] += 1;
@@ -228,7 +237,8 @@ pub fn client_sent_fin(tcp: &TcpHeader, old_s_state: TcpState, pdu: &mut Pdu, c:
             counter_s[TcpStatistics::SentAck4Fin] += 1;
             c.set_release_cause(ReleaseCause::PassiveClose);
             c.c_push_state(TcpState::LastAck);
-        } else { // no ACK
+        } else {
+            // no ACK
             counter_c[TcpStatistics::RecvFin] += 1;
             counter_s[TcpStatistics::SentFin] += 1;
             c.set_release_cause(ReleaseCause::ActiveClose);
@@ -239,7 +249,8 @@ pub fn client_sent_fin(tcp: &TcpHeader, old_s_state: TcpState, pdu: &mut Pdu, c:
                 c.s_push_state(TcpState::Closed)
             }
         }
-    } else { // server not in FinWait1, client in active close
+    } else {
+        // server not in FinWait1, client in active close
         c.set_release_cause(ReleaseCause::ActiveClose);
         counter_c[TcpStatistics::RecvFin] += 1;
         c.c_push_state(TcpState::FinWait1);
@@ -413,7 +424,6 @@ pub fn make_context(
     }
 }
 
-
 /// Delayed mode with facilities for crafting packets (e.g., server-side SYN).
 pub struct DelayedMode {
     pub pdu_allocator: PduAllocator,
@@ -421,10 +431,10 @@ pub struct DelayedMode {
     pub bypass_consumer: Option<ReceiveBatch<MpscConsumer>>,
 }
 
-
-
 impl DelayedMode {
-    fn alloc_pdu(&mut self) -> Option<Pdu> { self.pdu_allocator.get_pdu() }
+    fn alloc_pdu(&mut self) -> Option<Pdu> {
+        self.pdu_allocator.get_pdu()
+    }
 
     pub fn take_bypass_consumer(&mut self) -> Option<ReceiveBatch<MpscConsumer>> {
         self.bypass_consumer.take()
@@ -440,9 +450,7 @@ impl DelayedMode {
         f_select_server: &FSel,
     ) {
         // Allocate a fresh PDU for crafting the SYN towards the server
-        let mut syn = self
-            .alloc_pdu()
-            .expect("DelayedMode: failed to allocate PDU for server SYN");
+        let mut syn = self.alloc_pdu().expect("DelayedMode: failed to allocate PDU for server SYN");
 
         let ip;
         let tcp;
@@ -458,7 +466,7 @@ impl DelayedMode {
             c.c2s_inserted_bytes = tcp_payload_size(c.payload_packet.as_ref().unwrap()) as i32 - payload_sz as i32;
 
             // Set the header for the selected server in the payload packet p
-            let server = &servers[c.server_index() ];
+            let server = &servers[c.server_index()];
             set_header(server, c.port(), p, &me.l234.mac, me.ip_s);
 
             // Prepare SYN packet by pushing MAC header of p into syn, then swap p to point to syn
@@ -473,15 +481,19 @@ impl DelayedMode {
         }
 
         // Reconstruct headers on p (the SYN packet)
-        let ok = p.push_header(&ip); assert!(ok);
-        let ok = p.push_header(&tcp); assert!(ok);
+        let ok = p.push_header(&ip);
+        assert!(ok);
+        let ok = p.push_header(&tcp);
+        assert!(ok);
         {
             let hs = p.headers_mut();
             hs.ip_mut(1).trim_length_by(payload_sz as u16);
             let tcp = hs.tcp_mut(2);
             // Initialize server-side seq number one less than chosen, set SYN, clear ACK/PSH
             c.seqn.f_seqn = tcp.seq_num().wrapping_sub(1);
-            unsafe { tcp.set_seq_num(c.seqn.f_seqn); }
+            unsafe {
+                tcp.set_seq_num(c.seqn.f_seqn);
+            }
             tcp.set_syn_flag();
             tcp.set_ack_num(0u32);
             tcp.unset_ack_flag();
@@ -553,7 +565,7 @@ pub fn client_to_server_common<FP>(
         let tailroom = p.get_tailroom();
         f_process_payload(c, p.get_payload_mut(2), tailroom);
     }
-    
+
     // Rewriting headers client->server
     let server = &servers[c.server_index()];
     set_header(server, c.port(), p, &me.l234.mac, me.ip_s);
@@ -574,19 +586,16 @@ pub fn client_to_server_common<FP>(
         }
         tcp.set_ack_num(newackn);
         c.ackn_p2s = newackn;
-        if tcp.fin_flag() { c.seqn_fin_p2s = newseqn; }
+        if tcp.fin_flag() {
+            c.seqn_fin_p2s = newseqn;
+        }
     }
 
     prepare_checksum_and_ttl(p);
 }
 
 /// Common handler for server->client path shared by both proxy modes.
-pub fn server_to_client_common(
-    p: &mut Pdu,
-    c: &mut ProxyConnection,
-    me: &Me,
-)
-{
+pub fn server_to_client_common(p: &mut Pdu, c: &mut ProxyConnection, me: &Me) {
     let newseqn;
     {
         // translate packets and forward to client
@@ -609,12 +618,16 @@ pub fn server_to_client_common(
         } else {
             oldackn.wrapping_add((-c.c2s_inserted_bytes) as u32)
         };
-        if c.c2s_inserted_bytes != 0 { tcp.set_ack_num(newackn); }
+        if c.c2s_inserted_bytes != 0 {
+            tcp.set_ack_num(newackn);
+        }
         tcp.set_seq_num(newseqn);
         c.ackn_p2c = newackn;
     }
 
-    if p.headers().tcp(2).fin_flag() { c.seqn.ack_for_fin_p2c = newseqn.wrapping_add(tcp_payload_size(p) as u32 + 1); }
+    if p.headers().tcp(2).fin_flag() {
+        c.seqn.ack_for_fin_p2c = newseqn.wrapping_add(tcp_payload_size(p) as u32 + 1);
+    }
 
     prepare_checksum_and_ttl(p);
 }
@@ -637,7 +650,11 @@ pub fn handle_server_close_and_fin_acks(
                 counter_c[TcpStatistics::SentFinPssv] += 1;
                 counter_s[TcpStatistics::RecvAck4Fin] += 1;
                 counter_c[TcpStatistics::SentAck4Fin] += 1;
-                trace!("{} received FIN-reply from server on proxy port {}", thread_id, tcp.dst_port());
+                trace!(
+                    "{} received FIN-reply from server on proxy port {}",
+                    thread_id,
+                    tcp.dst_port()
+                );
                 c.s_set_release_cause(ReleaseCause::PassiveClose);
                 c.s_push_state(TcpState::LastAck);
             } else {
@@ -675,7 +692,7 @@ pub fn handle_server_close_and_fin_acks(
                     c.c_push_state(TcpState::Closed);
                     c.s_push_state(TcpState::Closed);
                 }
-                TcpState::FinWait1 => { c.c_push_state(TcpState::FinWait2) }
+                TcpState::FinWait1 => c.c_push_state(TcpState::FinWait2),
                 TcpState::Closing => {
                     c.c_push_state(TcpState::Closed);
                 }
@@ -687,15 +704,18 @@ pub fn handle_server_close_and_fin_acks(
             }
             counter_s[TcpStatistics::RecvAck4Fin] += 1;
             counter_c[TcpStatistics::SentAck4Fin] += 1;
-            trace!("{} on proxy port {} transition to client/server state {:?}/{:?}", thread_id, c.port(), c.c_states(), c.s_states());
+            trace!(
+                "{} on proxy port {} transition to client/server state {:?}/{:?}",
+                thread_id,
+                c.port(),
+                c.c_states(),
+                c.s_states()
+            );
             return true;
         }
     }
     false
 }
-
-
-
 
 // Shared proxy infrastructure for simple and delayed TCP proxies.
 //

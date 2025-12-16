@@ -27,11 +27,7 @@ pub fn get_mac_from_ifname(ifname: &str) -> Result<MacAddress, ParseError> {
     let iface = Path::new("/sys/class/net").join(ifname).join("address");
     let mut macaddr = String::new();
     File::open(iface).and_then(|mut f| f.read_to_string(&mut macaddr)).unwrap();
-    macaddr
-        .lines()
-        .next()
-        .unwrap_or("")
-        .parse::<MacAddress>()
+    macaddr.lines().next().unwrap_or("").parse::<MacAddress>()
 }
 
 pub fn get_mac_string_from_ifname(ifname: &str) -> Result<String, ParseError> {

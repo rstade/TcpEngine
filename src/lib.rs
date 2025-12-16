@@ -69,24 +69,18 @@ use crate::nftcpproxy::setup_tcp_proxy;
 use crate::proxy_helper::{DelayedMode, PduAllocator};
 
 // Replacement for former `trait alias` of a function-like constraint
-pub trait FnPayload: Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize
-    + Send
-    + Sync
-    + Clone
-    + 'static
+pub trait FnPayload:
+    Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize + Send + Sync + Clone + 'static
 {
 }
 
 impl<T> FnPayload for T where
-    T: Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize
-        + Send
-        + Sync
-        + Clone
-        + 'static
+    T: Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize + Send + Sync + Clone + 'static
 {
 }
 
-pub trait FnNetworkFunctionGraph: Fn(
+pub trait FnNetworkFunctionGraph:
+    Fn(
         i32,
         Option<PciQueueType>,
         Option<KniQueueType>,
@@ -115,31 +109,13 @@ impl<T> FnNetworkFunctionGraph for T where
 {
 }
 
-pub trait FnProxySelectServer: Fn(&mut ProxyConnection, &Vec<L234Data>)
-    + Send
-    + Sync
-    + Clone
-    + 'static
-{
-}
+pub trait FnProxySelectServer: Fn(&mut ProxyConnection, &Vec<L234Data>) + Send + Sync + Clone + 'static {}
 
-impl<T> FnProxySelectServer for T where
-    T: Fn(&mut ProxyConnection, &Vec<L234Data>) + Send + Sync + Clone + 'static
-{
-}
+impl<T> FnProxySelectServer for T where T: Fn(&mut ProxyConnection, &Vec<L234Data>) + Send + Sync + Clone + 'static {}
 
-pub trait FnProxyPayload: Fn(&mut ProxyConnection, &mut [u8], usize)
-    + Send
-    + Sync
-    + Clone
-    + 'static
-{
-}
+pub trait FnProxyPayload: Fn(&mut ProxyConnection, &mut [u8], usize) + Send + Sync + Clone + 'static {}
 
-impl<T> FnProxyPayload for T where
-    T: Fn(&mut ProxyConnection, &mut [u8], usize) + Send + Sync + Clone + 'static
-{
-}
+impl<T> FnProxyPayload for T where T: Fn(&mut ProxyConnection, &mut [u8], usize) + Send + Sync + Clone + 'static {}
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 pub enum EngineMode {
@@ -148,14 +124,12 @@ pub enum EngineMode {
     TrafficGenerator,
 }
 
-
 #[derive(Deserialize, Clone)]
 pub struct Configuration {
     pub targets: Vec<TargetConfig>,
     pub engine: EngineConfig,
     pub test_size: Option<usize>,
 }
-
 
 #[derive(Deserialize, Clone)]
 pub struct EngineConfig {
@@ -246,9 +220,10 @@ fn is_ip_assigned(interface: &str, ipnet: Ipv4Net) -> Result<bool, InterfaceConf
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(InterfaceConfigError::CommandFailed(
-            format!("ip addr show failed: {}", stderr)
-        ));
+        return Err(InterfaceConfigError::CommandFailed(format!(
+            "ip addr show failed: {}",
+            stderr
+        )));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -277,9 +252,7 @@ fn add_ip_address(interface: &str, ipnet: Ipv4Net) -> Result<(), InterfaceConfig
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(InterfaceConfigError::CommandFailed(
-            format!("ip addr add failed: {}", stderr)
-        ));
+        return Err(InterfaceConfigError::CommandFailed(format!("ip addr add failed: {}", stderr)));
     }
 
     println!("    ✓ IP address added");
@@ -297,9 +270,10 @@ fn bring_interface_up(interface: &str) -> Result<(), InterfaceConfigError> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(InterfaceConfigError::CommandFailed(
-            format!("ip link set up failed: {}", stderr)
-        ));
+        return Err(InterfaceConfigError::CommandFailed(format!(
+            "ip link set up failed: {}",
+            stderr
+        )));
     }
 
     println!("    ✓ Interface is up");
@@ -333,8 +307,10 @@ pub fn configure_interfaces(targets: &[TargetConfig]) -> Result<(), InterfaceCon
 
             // Check if we've already configured this interface-IP pair
             if configured.contains(&config_key) {
-                println!("  ℹ Interface {} with IP {} already configured, skipping\n",
-                         interface, target.ipnet);
+                println!(
+                    "  ℹ Interface {} with IP {} already configured, skipping\n",
+                    interface, target.ipnet
+                );
                 continue;
             }
 
@@ -359,8 +335,6 @@ pub fn configure_interfaces(targets: &[TargetConfig]) -> Result<(), InterfaceCon
     println!("✅ All interfaces configured successfully\n");
     Ok(())
 }
-
-
 
 /// This function is called once by each scheduler running as an independent thread on each active core when the RunTime installs the pipelines.
 /// Currently it iterates through all physical ports which use the respective core and sets up the network function graph (NFG) of the engine for that port and that core.
@@ -530,7 +504,11 @@ pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl 
           config: RunConfiguration<Configuration, Store64<Extension>>| {
         if let (Some(pci), Some(kni)) = (pci, kni) {
             let (producer, consumer) = new_mpsc_queue_pair();
-            let mode = DelayedMode { pdu_allocator: PduAllocator::new(), producer, bypass_consumer: Some(consumer) };
+            let mode = DelayedMode {
+                pdu_allocator: PduAllocator::new(),
+                producer,
+                bypass_consumer: Some(consumer),
+            };
             setup_tcp_proxy(
                 Some(mode),
                 core,
@@ -568,7 +546,6 @@ pub fn get_simple_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl F
         }
     }
 }
-
 
 pub fn initialize_engine(indirectly: bool) -> (RunTime<Configuration, Store64<Extension>>, EngineMode, Arc<AtomicBool>) {
     env_logger::init();

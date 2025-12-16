@@ -371,11 +371,7 @@ pub trait ConRecordOperations<S: SimpleStore> {
     #[inline]
     fn sock(&self) -> Option<(u32, u16)> {
         let s = self.store().borrow().get(self.con_rec()).sock();
-        if s.0 != 0 {
-            Some(s)
-        } else {
-            None
-        }
+        if s.0 != 0 { Some(s) } else { None }
     }
 
     #[inline]

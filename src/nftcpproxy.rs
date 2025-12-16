@@ -22,9 +22,9 @@ use crate::netfcts::comm::MessageFrom;
 use crate::netfcts::tasks::TaskType;
 use crate::profiling::Profiler;
 use crate::proxy_helper::{
-    client_sent_fin, forward_established_c2s, forward_established_s2c, handle_timer_tick, ingress_classify,
-    make_context, maybe_enable_tx_offload, pass_tcp_port_filter, release_if_needed, server_to_client_common,
-    start_kni_forwarder, DelayedMode, IngressDecision, Me, PROXY_PROF_LABELS,
+    client_sent_fin, forward_established_c2s, forward_established_s2c, handle_timer_tick, ingress_classify, make_context,
+    maybe_enable_tx_offload, pass_tcp_port_filter, release_if_needed, server_to_client_common, start_kni_forwarder,
+    DelayedMode, IngressDecision, Me, PROXY_PROF_LABELS,
 };
 use crate::Configuration;
 
