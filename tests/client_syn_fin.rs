@@ -165,7 +165,7 @@ fn delayed_binding_proxy() {
         thread::spawn(move || {
             for ntry in 0..queries {
                 match TcpStream::connect(&SocketAddr::from(proxy_addr)) {
-                    Ok(mut stream) => {
+                    Ok(stream) => {
                         debug!("test connection {}: TCP connect to proxy successful", ntry);
                         stream.shutdown(std::net::Shutdown::Both).unwrap();
                     }
@@ -275,10 +275,10 @@ fn delayed_binding_proxy() {
             if c.release_cause() == ReleaseCause::PassiveClose && c.last_state() == TcpState::Closed {
                 completed_count_s += 1
             };
-            if (mode == EngineMode::DelayedProxy) {
+            if mode == EngineMode::DelayedProxy {
                 assert_eq!(c.states(), [TcpState::Listen, TcpState::LastAck, TcpState::Closed])
             };
-            if (mode == EngineMode::SimpleProxy) {
+            if mode == EngineMode::SimpleProxy {
                 assert_eq!(
                     c.states()[0..3],
                     [TcpState::Listen, TcpState::SynReceived, TcpState::Established]

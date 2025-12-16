@@ -3,7 +3,7 @@ use std::clone::Clone;
 use std::cmp::min;
 use std::fmt::Debug;
 use std::vec::Drain;
-//use separator::Separatable;
+//use separator::Separable;
 
 /*
 pub fn duration_to_millis(dur: &Duration) -> u64 {
@@ -97,6 +97,7 @@ where
         if self.start == 0 {
             self.start = now - self.resolution_cycles;
         }
+        // delays (after_cycles) < resolution go into slot 0
         let dur = *after_cycles + now - self.start;
         let slots = dur / self.resolution_cycles - 1;
         let slot = slots.wrapping_rem(self.no_slots as u64);
@@ -134,23 +135,47 @@ mod tests {
     use std::time::Duration;
     use super::super::system::SystemData;
 
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::__cpuid;
+
+    fn get_tsc_frequency() -> Option<u64> {
+        unsafe {
+            // CPUID Leaf 0x15: TSC/Crystal Clock Information
+            let result = __cpuid(0x15);
+
+            if result.ebx == 0 || result.eax == 0 {
+                return None;
+            }
+
+            // TSC frequency = (crystal_freq * ebx) / eax
+            let crystal_freq = result.ecx; // in Hz
+            let tsc_freq = (crystal_freq as u64 * result.ebx as u64) / result.eax as u64;
+
+            Some(tsc_freq)
+        }
+    }
+
     #[test]
     fn event_timing() {
         let system_data = SystemData::detect();
-        let milli_to_cycles: u64 = system_data.cpu_clock / 1000;
+        let frequency: u64 = get_tsc_frequency().unwrap_or(system_data.cpu_clock); // system_data.cpu_clock may be largely off
+        let cycles_per_milli: u64 = frequency / 1000;  // cycles per millisecond
+
+        println!("System data cpu clock = {:?}, cycles per millisecond = {:?}", system_data.cpu_clock, cycles_per_milli);
 
         let start = unsafe { _rdtsc() };
         println!("start = {:?}", start);
 
-        let mut wheel: TimerWheel<u16> = TimerWheel::new(128, 16 * milli_to_cycles, 128);
+        let mut wheel: TimerWheel<u16> = TimerWheel::new(128, 16 * cycles_per_milli, 128);
 
         for j in 0..128 {
             let n_millis: u16 = j * 16 + 8;
-            let _slot = wheel.schedule(&((n_millis as u64) * milli_to_cycles), n_millis);
-            //println!("n_millis= {}, slot = {}", n_millis, _slot);
+            let _slot = wheel.schedule(&((n_millis as u64) * cycles_per_milli), n_millis);
+            // println!("n_millis= {}, slot = ({},{})", n_millis, _slot.0, _slot.1);
         }
 
         let mut n_found = 0;
+
         for _i in 0..1024 {
             // proceed with roughly 2 ms ticks
             thread::sleep(Duration::from_millis(2));
@@ -159,7 +184,7 @@ mod tests {
                 (Some(mut drain), _more) => {
                     let event = drain.next();
                     if event.is_some() {
-                        assert_eq!(&(now - start) / 16 / milli_to_cycles, (event.unwrap() / 16) as u64);
+                        assert_eq!(&(now - start) / 16 / cycles_per_milli, (event.unwrap() / 16) as u64);
                         n_found += 1;
                     } else {
                         assert!(false);
@@ -168,10 +193,10 @@ mod tests {
                 (None, _more) => (),
             }
         }
-        assert_eq!(n_found, 128);
+        assert!(n_found == 128);
 
         // test that wheel overflow does not break the code:
-        wheel.schedule(&((5000 as u64) * milli_to_cycles), 5000);
+        wheel.schedule(&((5000 as u64) * cycles_per_milli), 5000);
 
         let mut found_it: bool = false;
         for _i in 0..1024 {
