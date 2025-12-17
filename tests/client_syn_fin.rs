@@ -128,7 +128,7 @@ fn delayed_binding_proxy() {
 
     let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
     mtx.send(MessageFrom::StartEngine).unwrap();
-    thread::sleep(Duration::from_millis(2000 as u64));
+    thread::sleep(Duration::from_millis(2000u64));
 
     // set up servers
     for server in configuration.targets.clone() {
@@ -154,7 +154,7 @@ fn delayed_binding_proxy() {
         });
     }
 
-    thread::sleep(Duration::from_millis(500 as u64)); // wait for the servers
+    thread::sleep(Duration::from_millis(500u64)); // wait for the servers
 
     // emulate clients
     let queries = configuration.test_size.unwrap();
@@ -180,7 +180,7 @@ fn delayed_binding_proxy() {
 
     println!("\nTask Performance Data:\n");
     mtx.send(MessageFrom::PrintPerformance(cores)).unwrap();
-    thread::sleep(Duration::from_millis(1000 as u64));
+    thread::sleep(Duration::from_millis(1000u64));
 
     mtx.send(MessageFrom::FetchCounter).unwrap();
     mtx.send(MessageFrom::FetchCRecords).unwrap();
@@ -226,7 +226,7 @@ fn delayed_binding_proxy() {
                 {
                     completed_count += 1
                 }
-                if c.get_first_stamp().unwrap_or(u64::max_value()) < min.get_first_stamp().unwrap_or(u64::max_value()) {
+                if c.get_first_stamp().unwrap_or(u64::MAX) < min.get_first_stamp().unwrap_or(u64::MAX) {
                     min = c
                 }
                 if c.get_last_stamp().unwrap_or(0) > max.get_last_stamp().unwrap_or(0) {
@@ -293,5 +293,5 @@ fn delayed_binding_proxy() {
     thread::sleep(Duration::from_millis(2000));
     info!("terminating ProxyEngine ...");
     println!("\nPASSED\n");
-    std::process::exit(0);
+    process::exit(0);
 }

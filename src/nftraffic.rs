@@ -68,7 +68,7 @@ pub fn setup_generator<FPL>(
     let servers: Vec<L234Data> = get_server_addresses(&run_configuration.engine_configuration);
     let pipeline_id = PipelineId {
         core: core as u16,
-        port_id: pci.port_queue.port_id() as u16,
+        port_id: pci.port_queue.port_id(),
         rxq: pci.port_queue.rxq(),
     };
     debug!("enter setup_generator {}", pipeline_id);
@@ -276,7 +276,7 @@ pub fn setup_generator<FPL>(
             "cmanager_s",      //11
         ];
         // capacity heuristic based on test size
-        let cap = (nr_connections as usize).saturating_mul(2).min(20_000);
+        let cap = nr_connections.saturating_mul(2).min(20_000);
         Profiler::new(&labels, cap, 100)
     };
 
@@ -370,7 +370,7 @@ pub fn setup_generator<FPL>(
             syn_counter: &mut usize,
         ) {
             p.headers_mut().mac_mut(0).set_etype(0x0800); // overwrite private ethertype tag
-            c.set_server_index(*syn_counter as usize % servers.len());
+            c.set_server_index(*syn_counter % servers.len());
             set_header(&servers[c.server_index()], c.port(), p, &me.mac, me.ip);
 
             //generate seq number:

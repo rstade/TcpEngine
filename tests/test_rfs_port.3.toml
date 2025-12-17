@@ -1,6 +1,6 @@
 
 [netbricks]
-name        = "test_rfs_port.3"
+name        = "test_rfs_port"
 master_core = 0
 pool_size   = 2048              # default 2048
 cache_size  = 128               # default 32

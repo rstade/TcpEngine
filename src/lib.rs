@@ -409,7 +409,6 @@ pub fn get_tcp_generator_nfg() -> impl FnNetworkFunctionGraph {
             {
                 let ip = p.headers_mut().ip_mut(1);
                 serialize_into(&mut buf[..], &cdata.unwrap()).expect("cannot serialize");
-                //let buf = serialize(&cdata).unwrap();
                 sz = buf.len();
                 let ip_sz = ip.length();
                 ip.set_length(ip_sz + sz as u16);

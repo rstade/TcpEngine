@@ -53,7 +53,7 @@ where
 
     #[inline]
     pub fn get_max_timeout_cycles(&self) -> u64 {
-        (self.no_slots as u64 - 1) * self.resolution_cycles as u64
+        (self.no_slots as u64 - 1) * self.resolution_cycles
     }
 
     pub fn tick(&mut self, now: &u64) -> (Option<Drain<'_, T>>, bool) {
@@ -196,7 +196,7 @@ mod tests {
         assert!(n_found == 128);
 
         // test that wheel overflow does not break the code:
-        wheel.schedule(&((5000 as u64) * cycles_per_milli), 5000);
+        wheel.schedule(&((5000u64) * cycles_per_milli), 5000);
 
         let mut found_it: bool = false;
         for _i in 0..1024 {
