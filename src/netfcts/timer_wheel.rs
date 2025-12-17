@@ -159,9 +159,12 @@ mod tests {
     fn event_timing() {
         let system_data = SystemData::detect();
         let frequency: u64 = get_tsc_frequency().unwrap_or(system_data.cpu_clock); // system_data.cpu_clock may be largely off
-        let cycles_per_milli: u64 = frequency / 1000;  // cycles per millisecond
+        let cycles_per_milli: u64 = frequency / 1000; // cycles per millisecond
 
-        println!("System data cpu clock = {:?}, cycles per millisecond = {:?}", system_data.cpu_clock, cycles_per_milli);
+        println!(
+            "System data cpu clock = {:?}, cycles per millisecond = {:?}",
+            system_data.cpu_clock, cycles_per_milli
+        );
 
         let start = unsafe { _rdtsc() };
         println!("start = {:?}", start);

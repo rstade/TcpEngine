@@ -16,7 +16,9 @@ use separator::Separatable;
 use crate::tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
 use crate::{get_server_addresses, Configuration};
 
-use crate::netfcts::tcp_common::{TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size};
+use crate::netfcts::tcp_common::{
+    TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size, TcpFlags,
+};
 
 #[cfg(feature = "profiling")]
 //use crate::netfcts::utils::TimeAdder;
@@ -827,76 +829,88 @@ pub fn setup_generator<FPL>(
                                 c.ackn_nxt = pdu.headers().tcp(2).seq_num().wrapping_add(payload_sz as u32);
                             }
 
-                            if pdu.headers().tcp(2).syn_flag() {
-                                // check flags
-                                if old_s_state == TcpState::Listen {
-                                    // replies with a SYN-ACK to client:
-                                    syn_received(pdu, c);
-                                    c.set_server_index(rxq as usize); // we misuse this field for the queue number
-                                    c.wheel_slot_and_index = wheel_s.schedule(
-                                        &(timeouts.established.unwrap() * system_data.cpu_clock / 1000),
-                                        c.sock().unwrap(),
-                                    );
-                                    counter_s[TcpStatistics::SentSynAck] += 1;
-                                    group_index = 1;
+                            let tcp_flags = TcpFlags::from_tcp_header(pdu.headers().tcp(2));
+                            let ack_valid = pdu.headers().tcp(2).ack_num() == c.seqn_nxt;
+
+                            match (tcp_flags, ack_valid) {
+                                (TcpFlags::Syn, _) => {
+                                    // check flags
+                                    match old_s_state {
+                                        TcpState::Listen => {
+                                            // replies with a SYN-ACK to client:
+                                            syn_received(pdu, c);
+                                            c.set_server_index(rxq as usize); // we misuse this field for the queue number
+                                            c.wheel_slot_and_index = wheel_s.schedule(
+                                                &(timeouts.established.unwrap() * system_data.cpu_clock / 1000),
+                                                c.sock().unwrap(),
+                                            );
+                                            counter_s[TcpStatistics::SentSynAck] += 1;
+                                            group_index = 1;
+                                            #[cfg(feature = "profiling")]
+                                            profiler.add_diff(1, timestamp_entry);
+                                        }
+                                        _ => {
+                                            warn!("{} received SYN in state {:?}", thread_id, c.states());
+                                        }
+                                    }
+                                }
+                                (TcpFlags::Fin, _) | (TcpFlags::FinAck, _) => {
+                                    //trace!("server: received FIN");
+                                    if old_s_state >= TcpState::FinWait1 {
+                                        if active_close(pdu, c, &mut counter_s, &old_s_state) {
+                                            b_release_connection_s = true;
+                                        }
+                                        if ack_valid {
+                                            counter_s[TcpStatistics::RecvAck4Fin] += 1;
+                                        }
+                                        group_index = 1;
+                                    } else {
+                                        // DUT wants to close connection
+                                        passive_close(pdu, c, &thread_id, &mut counter_s);
+                                        group_index = 1;
+                                    }
                                     #[cfg(feature = "profiling")]
-                                    profiler.add_diff(1, timestamp_entry);
-                                } else {
-                                    warn!("{} received SYN in state {:?}", thread_id, c.states());
+                                    profiler.add_diff(8, timestamp_entry);
                                 }
-                            } else if pdu.headers().tcp(2).fin_flag() {
-                                //trace!("server: received FIN");
-                                if old_s_state >= TcpState::FinWait1 {
-                                    if active_close(pdu, c, &mut counter_s, &old_s_state) {
-                                        b_release_connection_s = true;
-                                    }
-                                    if pdu.headers().tcp(2).ack_flag() && pdu.headers().tcp(2).ack_num() == c.seqn_nxt {
-                                        counter_s[TcpStatistics::RecvAck4Fin] += 1;
-                                    }
-                                    group_index = 1;
-                                } else {
-                                    // DUT wants to close connection
-                                    passive_close(pdu, c, &thread_id, &mut counter_s);
-                                    group_index = 1;
+                                (TcpFlags::Rst, _) => {
+                                    //trace!("server: received RST");
+                                    counter_s[TcpStatistics::RecvRst] += 1;
+                                    c.push_state(TcpState::Closed);
+                                    c.set_release_cause(ReleaseCause::PassiveRst);
+                                    // release connection in the next block
+                                    b_release_connection_s = true;
                                 }
-                                #[cfg(feature = "profiling")]
-                                profiler.add_diff(8, timestamp_entry);
-                            } else if pdu.headers().tcp(2).rst_flag() {
-                                //trace!("server: received RST");
-                                counter_s[TcpStatistics::RecvRst] += 1;
-                                c.push_state(TcpState::Closed);
-                                c.set_release_cause(ReleaseCause::PassiveRst);
-                                // release connection in the next block
-                                b_release_connection_s = true;
-                            } else if pdu.headers().tcp(2).ack_flag() && pdu.headers().tcp(2).ack_num() == c.seqn_nxt {
-                                match old_s_state {
-                                    TcpState::SynReceived => {
-                                        c.push_state(TcpState::Established);
-                                        counter_s[TcpStatistics::RecvSynAck2] += 1;
-                                        debug!("{} server: connection from DUT ({:?}) established", thread_id, src_sock);
-                                        #[cfg(feature = "profiling")]
-                                        profiler.add_diff(2, timestamp_entry);
+                                (TcpFlags::Ack, true) => {
+                                    match old_s_state {
+                                        TcpState::SynReceived => {
+                                            c.push_state(TcpState::Established);
+                                            counter_s[TcpStatistics::RecvSynAck2] += 1;
+                                            debug!("{} server: connection from DUT ({:?}) established", thread_id, src_sock);
+                                            #[cfg(feature = "profiling")]
+                                            profiler.add_diff(2, timestamp_entry);
+                                        }
+                                        TcpState::LastAck => {
+                                            // received final ack in passive close
+                                            //trace!("server: received final ACK in passive close");
+                                            counter_s[TcpStatistics::RecvAck4Fin] += 1;
+                                            c.push_state(TcpState::Closed);
+                                            c.set_release_cause(ReleaseCause::PassiveClose);
+                                            // release connection in the next block
+                                            b_release_connection_s = true;
+                                        }
+                                        TcpState::FinWait1 => {
+                                            c.push_state(TcpState::FinWait2);
+                                            counter_s[TcpStatistics::RecvAck4Fin] += 1;
+                                        }
+                                        TcpState::Closing => {
+                                            c.push_state(TcpState::Closed);
+                                            counter_s[TcpStatistics::RecvAck4Fin] += 1;
+                                            b_release_connection_s = true;
+                                        }
+                                        _ => (),
                                     }
-                                    TcpState::LastAck => {
-                                        // received final ack in passive close
-                                        //trace!("server: received final ACK in passive close");
-                                        counter_s[TcpStatistics::RecvAck4Fin] += 1;
-                                        c.push_state(TcpState::Closed);
-                                        c.set_release_cause(ReleaseCause::PassiveClose);
-                                        // release connection in the next block
-                                        b_release_connection_s = true;
-                                    }
-                                    TcpState::FinWait1 => {
-                                        c.push_state(TcpState::FinWait2);
-                                        counter_s[TcpStatistics::RecvAck4Fin] += 1;
-                                    }
-                                    TcpState::Closing => {
-                                        c.push_state(TcpState::Closed);
-                                        counter_s[TcpStatistics::RecvAck4Fin] += 1;
-                                        b_release_connection_s = true;
-                                    }
-                                    _ => (),
                                 }
+                                _ => (),
                             }
 
                             if b_payload && old_s_state == TcpState::Established {
@@ -984,119 +998,135 @@ pub fn setup_generator<FPL>(
                                 c.ackn_nxt = pdu.headers().tcp(2).seq_num().wrapping_add(payload_sz as u32);
                             }
 
-                            if pdu.headers().tcp(2).ack_flag() && pdu.headers().tcp(2).syn_flag() {
-                                group_index = 1;
-                                counter_c[TcpStatistics::RecvSynAck] += 1;
-                                if old_c_state == TcpState::SynSent {
-                                    c.push_state(TcpState::Established);
-                                    ready_connection = Some(c.port());
-                                    debug!(
-                                        "{} client: connection for port {} to DUT ({:?}, {:?}) established ",
-                                        thread_id,
-                                        c.port(),
-                                        Ipv4Addr::from(src_sock.0),
-                                        src_sock.1
-                                    );
-                                    synack_received(pdu, &mut c);
-                                    counter_c[TcpStatistics::SentSynAck2] += 1;
-                                } else if old_c_state == TcpState::Established {
-                                    synack_received(pdu, &mut c);
-                                    counter_c[TcpStatistics::SentSynAck2] += 1;
-                                } else {
-                                    warn!("{} received SYN-ACK in wrong state: {:?}", thread_id, old_c_state);
-                                    group_index = 0;
-                                } // ignore the SynAck
-                            } else if pdu.headers().tcp(2).fin_flag() {
-                                if old_c_state >= TcpState::FinWait1 {
-                                    if pdu.headers().tcp(2).ack_flag() && pdu.headers().tcp(2).ack_num() == c.seqn_nxt {
-                                        recv_ack4fin(
-                                            c,
-                                            &mut counter_c[TcpStatistics::RecvAck4Fin],
-                                            nr_connections,
-                                            &mut stop_stamp,
-                                            &mut hold,
-                                        );
-                                    }
-                                    if active_close(pdu, c, &mut counter_c, &old_c_state) {
-                                        b_release_connection_c = true;
-                                    }
+                            let tcp_flags = TcpFlags::from_tcp_header(pdu.headers().tcp(2));
+                            let ack_valid = pdu.headers().tcp(2).ack_num() == c.seqn_nxt;
+                            let b_payload_established = b_payload && old_c_state == TcpState::Established;
+
+                            match tcp_flags {
+                                TcpFlags::SynAck => {
                                     group_index = 1;
-                                } else {
-                                    passive_close(pdu, c, &thread_id, &mut counter_c);
-                                    group_index = 1;
+                                    counter_c[TcpStatistics::RecvSynAck] += 1;
+                                    match old_c_state {
+                                        TcpState::SynSent => {
+                                            c.push_state(TcpState::Established);
+                                            ready_connection = Some(c.port());
+                                            debug!(
+                                                "{} client: connection for port {} to DUT ({:?}, {:?}) established ",
+                                                thread_id,
+                                                c.port(),
+                                                Ipv4Addr::from(src_sock.0),
+                                                src_sock.1
+                                            );
+                                            synack_received(pdu, &mut c);
+                                            counter_c[TcpStatistics::SentSynAck2] += 1;
+                                        }
+                                        TcpState::Established => {
+                                            synack_received(pdu, &mut c);
+                                            counter_c[TcpStatistics::SentSynAck2] += 1;
+                                        }
+                                        _ => {
+                                            warn!("{} received SYN-ACK in wrong state: {:?}", thread_id, old_c_state);
+                                            group_index = 0;
+                                        } // ignore the SynAck
+                                    }
                                 }
-                                #[cfg(feature = "profiling")]
-                                profiler.add_diff(7, timestamp_entry);
-                            } else if pdu.headers().tcp(2).rst_flag() {
-                                counter_c[TcpStatistics::RecvRst] += 1;
-                                c.push_state(TcpState::Closed);
-                                c.set_release_cause(ReleaseCause::PassiveRst);
-                                // release connection in the next block
-                                b_release_connection_c = true;
-                            } else if pdu.headers().tcp(2).ack_flag() && pdu.headers().tcp(2).ack_num() == c.seqn_nxt {
-                                match old_c_state {
-                                    TcpState::LastAck => {
-                                        //trace!("received final ACK in passive close");
-                                        recv_ack4fin(
-                                            c,
-                                            &mut counter_c[TcpStatistics::RecvAck4Fin],
-                                            nr_connections,
-                                            &mut stop_stamp,
-                                            &mut hold,
-                                        );
-                                        c.push_state(TcpState::Closed);
-                                        c.set_release_cause(ReleaseCause::PassiveClose);
-                                        // release connection in the next block
-                                        b_release_connection_c = true;
-                                    }
-                                    TcpState::FinWait1 => {
-                                        c.push_state(TcpState::FinWait2);
-                                        recv_ack4fin(
-                                            c,
-                                            &mut counter_c[TcpStatistics::RecvAck4Fin],
-                                            nr_connections,
-                                            &mut stop_stamp,
-                                            &mut hold,
-                                        );
-                                    }
-                                    TcpState::Closing => {
-                                        c.push_state(TcpState::Closed);
-                                        recv_ack4fin(
-                                            c,
-                                            &mut counter_c[TcpStatistics::RecvAck4Fin],
-                                            nr_connections,
-                                            &mut stop_stamp,
-                                            &mut hold,
-                                        );
-                                        b_release_connection_c = true;
-                                    }
-                                    TcpState::Established if b_payload => {
-                                        if !c_recv_payload(pdu, c) {
-                                            counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
-                                        } else {
-                                            counter_c[TcpStatistics::SentFin] += 1;
+                                TcpFlags::Fin | TcpFlags::FinAck => {
+                                    if old_c_state >= TcpState::FinWait1 {
+                                        if ack_valid {
+                                            recv_ack4fin(
+                                                c,
+                                                &mut counter_c[TcpStatistics::RecvAck4Fin],
+                                                nr_connections,
+                                                &mut stop_stamp,
+                                                &mut hold,
+                                            );
+                                        }
+                                        if active_close(pdu, c, &mut counter_c, &old_c_state) {
+                                            b_release_connection_c = true;
                                         }
                                         group_index = 1;
+                                    } else {
+                                        passive_close(pdu, c, &thread_id, &mut counter_c);
+                                        group_index = 1;
                                     }
-                                    _ => (),
+                                    #[cfg(feature = "profiling")]
+                                    profiler.add_diff(7, timestamp_entry);
                                 }
-                            } else if b_payload && old_c_state == TcpState::Established {
-                                if !c_recv_payload(pdu, c) {
-                                    counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
-                                } else {
-                                    counter_c[TcpStatistics::SentFin] += 1;
+                                TcpFlags::Rst => {
+                                    counter_c[TcpStatistics::RecvRst] += 1;
+                                    c.push_state(TcpState::Closed);
+                                    c.set_release_cause(ReleaseCause::PassiveRst);
+                                    // release connection in the next block
+                                    b_release_connection_c = true;
                                 }
-                                group_index = 1;
-                            } else if !pdu.headers().tcp(2).ack_flag() {
-                                counter_c[TcpStatistics::Unexpected] += 1;
-                                warn!(
-                                    "{} unexpected TCP packet on port {} in client state {:?}, sending to KNI i/f: {}",
-                                    thread_id,
-                                    pdu.headers().tcp(2).dst_port(),
-                                    c.states(),
-                                    pdu.headers().tcp(2),
-                                );
-                                group_index = 2;
+                                TcpFlags::Ack if ack_valid => {
+                                    match old_c_state {
+                                        TcpState::LastAck => {
+                                            //trace!("received final ACK in passive close");
+                                            recv_ack4fin(
+                                                c,
+                                                &mut counter_c[TcpStatistics::RecvAck4Fin],
+                                                nr_connections,
+                                                &mut stop_stamp,
+                                                &mut hold,
+                                            );
+                                            c.push_state(TcpState::Closed);
+                                            c.set_release_cause(ReleaseCause::PassiveClose);
+                                            // release connection in the next block
+                                            b_release_connection_c = true;
+                                        }
+                                        TcpState::FinWait1 => {
+                                            c.push_state(TcpState::FinWait2);
+                                            recv_ack4fin(
+                                                c,
+                                                &mut counter_c[TcpStatistics::RecvAck4Fin],
+                                                nr_connections,
+                                                &mut stop_stamp,
+                                                &mut hold,
+                                            );
+                                        }
+                                        TcpState::Closing => {
+                                            c.push_state(TcpState::Closed);
+                                            recv_ack4fin(
+                                                c,
+                                                &mut counter_c[TcpStatistics::RecvAck4Fin],
+                                                nr_connections,
+                                                &mut stop_stamp,
+                                                &mut hold,
+                                            );
+                                            b_release_connection_c = true;
+                                        }
+                                        TcpState::Established if b_payload => {
+                                            if !c_recv_payload(pdu, c) {
+                                                counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
+                                            } else {
+                                                counter_c[TcpStatistics::SentFin] += 1;
+                                            }
+                                            group_index = 1;
+                                        }
+                                        _ => (),
+                                    }
+                                }
+                                TcpFlags::Ack if b_payload_established => {
+                                    if !c_recv_payload(pdu, c) {
+                                        counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
+                                    } else {
+                                        counter_c[TcpStatistics::SentFin] += 1;
+                                    }
+                                    group_index = 1;
+                                }
+                                TcpFlags::Other if !pdu.headers().tcp(2).ack_flag() => {
+                                    counter_c[TcpStatistics::Unexpected] += 1;
+                                    warn!(
+                                        "{} unexpected TCP packet on port {} in client state {:?}, sending to KNI i/f: {}",
+                                        thread_id,
+                                        pdu.headers().tcp(2).dst_port(),
+                                        c.states(),
+                                        pdu.headers().tcp(2),
+                                    );
+                                    group_index = 2;
+                                }
+                                _ => (),
                             }
                         }
                     }
