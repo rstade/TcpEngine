@@ -1,0 +1,23 @@
+[netbricks]
+name        = "proxy"
+master_core = 0
+pool_size   = 2048              # default 2048
+cache_size  = 128                # default 32
+cores       = [ 2, 3 ]
+ports       = [ 
+    { name="72:00.1", rxd= 512, txd= 512, cores = [2, 3], checksum = false, driver= "Ixgbe", kni="virtio:virtio_user0", fdir = { pballoc="RteFdirPballoc256k", mode="RteFdirModePerfect", ipv4_mask= {src_ip="0.0.0.0", dst_ip="FFFFFFFF"}, src_port_mask="0", dst_port_mask="8000"}, flow_steering= "Port" },
+    { name="virtio:virtio_user0,path=/dev/vhost-net,iface=tap00,queues={},queue_size=1024", rxd=1024, txd=1024, cores = [1],  namespace="nsvirtio00", mac="a0:36:9f:82:9c:fe", ipnet="192.168.222.100/24"  },
+              ]
+
+[engine]
+# this toml is for connection the proxy to the TrafficGenerator running on pci port 72:00.00 (see traffic_run.toml)
+engine       = {  mode= "DelayedProxy", port= 999, timeouts= { established= 2000 }, detailed_records= false }
+
+# for port-based flow steering, the server listening ports of the TrafficGenerator must be used; this is the last port of
+# the respective port-range defined by dst_port_mask in the flowdirector definition (fdir) of the TrafficGenerator
+targets     =  [
+ #   { id = "tcpgen_1", ipnet = "192.168.222.1/24", mac = "a0:36:9f:82:9c:fc" , port= 16383 },
+    { id = "tcpgen_2", ipnet = "192.168.222.1/24", mac = "a0:36:9f:82:9c:fc" , port= 32767 },
+ #   { id = "tcpgen_3", ipnet = "192.168.222.1/24", mac = "a0:36:9f:82:9c:fc" , port= 49151 },
+    { id = "tcpgen_4", ipnet = "192.168.222.1/24", mac = "a0:36:9f:82:9c:fc" , port= 65535 },
+]
