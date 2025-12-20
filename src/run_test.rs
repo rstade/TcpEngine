@@ -23,7 +23,8 @@ use {crate::CData};
 use crate::netfcts::comm::MessageFrom;
 use {crate::initialize_engine, crate::ReleaseCause};
 use {crate::TcpState, crate::TcpStatistics};
-use crate::analysis::collect_from_main_reply;
+use crate::analysis::{collect_from_main_reply, generate_c_records_filename};
+use crate::EngineMode;
 
 // Centralized test timing constants
 const STARTUP_DELAY_MS: u64 = 1000;
@@ -42,7 +43,7 @@ pub enum TestType {
 
 // we use this function for the integration tests
 pub fn run_test(test_type: TestType) {
-    let (mut runtime, _mode, _running) = initialize_engine(true);
+    let (mut runtime, mode, _running) = initialize_engine(true);
     debug!("*** run_test logging is in debug mode ***");
 
     let run_configuration = runtime.run_configuration.clone();
@@ -253,8 +254,14 @@ pub fn run_test(test_type: TestType) {
         .detailed_records
         .unwrap_or(false)
     {
-        let file = match File::create("c_records.txt") {
-            Err(why) => panic!("couldn't create c_records.txt: {}", why),
+        let engine_name = match mode {
+            EngineMode::TrafficGenerator => "TrafficGenerator",
+            EngineMode::DelayedProxy => "DelayedProxy",
+            EngineMode::SimpleProxy => "SimpleProxy",
+        };
+        let filename = generate_c_records_filename(engine_name);
+        let file = match File::create(&filename) {
+            Err(why) => panic!("couldn't create {}: {}", filename, why),
             Ok(file) => file,
         };
         let mut f = BufWriter::new(file);

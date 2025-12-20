@@ -10,7 +10,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::arch::x86_64::_rdtsc;
 
 use uuid::Uuid;
-use bincode::{deserialize};
+use bincode::{deserialize, serialize_into};
 use separator::Separatable;
 
 use crate::tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
@@ -64,7 +64,7 @@ pub fn setup_generator<FPL>(
         .get_flow(pci.port_queue.rxq());
     me.ip = l4flow_for_this_core.ip; // in case we use destination IP address for flow steering
     let engine_config = &run_configuration.engine_configuration.engine;
-    let system_data = run_configuration.system_data.clone();
+
     me.port = engine_config.port;
 
     let servers: Vec<L234Data> = get_server_addresses(&run_configuration.engine_configuration);
@@ -90,22 +90,25 @@ pub fn setup_generator<FPL>(
     let max_open = engine_config.max_open.unwrap_or(cm_c.available_ports_count());
     let fin_by_client = engine_config.fin_by_client.unwrap_or(1000);
     let fin_by_server = engine_config.fin_by_server.unwrap_or(1);
-
+    let system_data = run_configuration.system_data.clone();
+    let frequency= system_data.tsc_frequency;
+    
     let mut wheel_c = TimerWheel::new(
         TIMER_WHEEL_SLOTS,
-        system_data.cpu_clock * TIMER_WHEEL_RESOLUTION_MS / 1000,
+        frequency * TIMER_WHEEL_RESOLUTION_MS / 1000,
         TIMER_WHEEL_SLOT_CAPACITY,
     );
     let mut wheel_s = TimerWheel::new(
         TIMER_WHEEL_SLOTS,
-        system_data.cpu_clock * TIMER_WHEEL_RESOLUTION_MS / 1000,
+        frequency * TIMER_WHEEL_RESOLUTION_MS / 1000,
         TIMER_WHEEL_SLOT_CAPACITY,
     );
+
     info!(
         "{} wheel cycle= {} millis, cpu-clock= {}",
         pipeline_id,
-        wheel_c.get_max_timeout_cycles() * 1000 / system_data.cpu_clock,
-        system_data.cpu_clock,
+        wheel_c.get_max_timeout_cycles() * 1000 / frequency,
+        frequency,
     );
 
     // check that we do not overflow the wheel:
@@ -114,7 +117,7 @@ pub fn setup_generator<FPL>(
         if timeout > wheel_c.get_max_timeout_cycles() - wheel_c.resolution() / 2 {
             warn!(
                 "timeout defined in configuration file overflows timer wheel: reset to {} millis",
-                wheel_c.get_max_timeout_cycles() * 1000 / system_data.cpu_clock - TIMER_WHEEL_RESOLUTION_MS / 2
+                wheel_c.get_max_timeout_cycles() * 1000 / frequency - TIMER_WHEEL_RESOLUTION_MS / 2
             );
             timeouts.established = Some(wheel_c.get_max_timeout_cycles() - wheel_c.resolution() / 2);
         }
@@ -130,6 +133,8 @@ pub fn setup_generator<FPL>(
     let uuid = Uuid::new_v4();
     let name = String::from("Kni2Pci");
     sched.add_runnable(Runnable::from_task(uuid, name, forward2pci).move_ready());
+
+    // install_task(sched, "Kni2Pci", forward2pci);
 
     let thread_id = format!("<c{}, rx{}>: ", core, pci.port_queue.rxq());
     let tx_clone = tx.clone();
@@ -198,13 +203,13 @@ pub fn setup_generator<FPL>(
             syn_producer,
             &me,
             0,
-            system_data.cpu_clock / engine_config.cps_limit() * 32,
+            frequency / engine_config.cps_limit() * 32,
             1u16,
         )
         .with_shutdown_tx(tx.clone())
-        .set_start_delay(system_data.cpu_clock / 100),
+        .set_start_delay(frequency / 200),
     );
-    tx.send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::TcpGenerator))
+    tx.send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::PacketGenerator))
         .unwrap();
     let syn_injector_ready_flag = sched.get_ready_flag(&injector_uuid).unwrap();
 
@@ -216,19 +221,19 @@ pub fn setup_generator<FPL>(
             payload_producer,
             &me,
             0,
-            system_data.cpu_clock / engine_config.cps_limit() * 32,
+            frequency / engine_config.cps_limit() * 32,
             2u16,
         )
         .with_shutdown_tx(tx.clone())
-        .set_start_delay(system_data.cpu_clock / 100),
+        .set_start_delay(frequency / 200),
     );
-    tx.send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::TcpGenerator))
+    tx.send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::PacketGenerator))
         .unwrap();
     let payload_injector_ready_flag = sched.get_ready_flag(&injector_uuid).unwrap();
 
     // set up the generator producing timer tick packets with our private EtherType
     let (producer_timerticks, consumer_timerticks) = new_mpsc_queue_pair();
-    let tick_generator = TickGenerator::new(producer_timerticks, &me, system_data.cpu_clock / 100); // 10 ms
+    let tick_generator = TickGenerator::new(producer_timerticks, &me, frequency / 100); // 10 ms
     assert!(wheel_c.resolution() >= tick_generator.tick_length());
     let wheel_tick_reduction_factor = wheel_c.resolution() / tick_generator.tick_length();
     let mut ticks = 0;
@@ -288,24 +293,24 @@ pub fn setup_generator<FPL>(
         let now = || unsafe { _rdtsc() }.separated_string();
 
         let _syn_injector_start = || {
-            debug!("{} (re-)starting the injector at {}", thread_id, now());
+            debug!("{} (re-)starting the SYN injector at {}", thread_id, now());
             syn_injector_ready_flag.store(true, Ordering::SeqCst);
         };
 
         let syn_injector_stop = || {
-            debug!("{}: stopping the injector at {}", thread_id, now());
+            debug!("{}: stopping the SYN injector at {}", thread_id, now());
             syn_injector_ready_flag.store(false, Ordering::SeqCst);
         };
 
         let syn_injector_runs = || syn_injector_ready_flag.load(Ordering::SeqCst);
 
         let _payload_injector_start = || {
-            debug!("{} (re-)starting the injector at {}", thread_id, now());
+            debug!("{} (re-)starting the payload injector at {}", thread_id, now());
             payload_injector_ready_flag.store(true, Ordering::SeqCst);
         };
 
         let payload_injector_stop = || {
-            debug!("{}: stopping the injector at {}", thread_id, now());
+            debug!("{}: stopping the payload injector at {}", thread_id, now());
             payload_injector_ready_flag.store(false, Ordering::SeqCst);
         };
 
@@ -522,9 +527,9 @@ pub fn setup_generator<FPL>(
         #[cfg(feature = "profiling")]
         let timestamp_entry = profiler.start();
 
+        // returns true if a FIN is to be sent
         let c_recv_payload = |p: &mut Pdu, c: &mut Connection| {
-            let mut b_fin = false;
-            set_payload(p, c, None, &mut b_fin, &fin_by_client);
+            let b_fin = !set_payload(p, c, None, &fin_by_client);
             if !b_fin {
                 c.inc_sent_payload_pkts();
                 p.headers_mut().tcp_mut(2).set_seq_num(c.seqn_nxt);
@@ -591,7 +596,7 @@ pub fn setup_generator<FPL>(
         let mut ready_connection = None;
         let server_listen_port = cm_c.listen_port();
 
-        // check if we got a packet from generator
+        // matching based on ethernet type and tcp destination port
         match (pdu.headers().mac(0).etype(), pdu.headers().tcp(2).dst_port()) {
             // SYN injection
             (PRIVATE_ETYPE_PACKET, 1) => {
@@ -613,7 +618,7 @@ pub fn setup_generator<FPL>(
                             );
                             c.push_state(TcpState::SynSent);
                             c.wheel_slot_and_index =
-                                wheel_c.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
+                                wheel_c.schedule(&(timeouts.established.unwrap() * frequency / 1000), c.port());
                             group_index = 1;
                             #[cfg(feature = "profiling")]
                             profiler.add_diff(4, timestamp_entry);
@@ -628,36 +633,14 @@ pub fn setup_generator<FPL>(
             // payload injection
             (PRIVATE_ETYPE_PACKET, 2) => {
                 let mut cdata = CData::new(SocketAddrV4::new(Ipv4Addr::from(cm_c.ip()), cm_c.listen_port()), 0, 0);
-                //trace!("{} payload injection packet received", thread_id);
+                //trace!("{} payload injection packet received at {}", thread_id, now());
                 //let mut ready_connection = None;
                 if let Some(c) = cm_c.get_ready_connection() {
+                    trace!("{} connection ready for payload packet", thread_id);
                     prepare_payload_packet(c, pdu, &me, &servers);
-                    let mut b_fin = false;
                     cdata.client_port = c.port();
                     cdata.uuid = c.uid();
-                    set_payload(pdu, c, Some(cdata), &mut b_fin, &fin_by_client);
-                    /*
-                    let pp = c.sent_payload_pkts();
-                    if pp < 1 {
-                        cdata.client_port = c.port();
-                        cdata.uuid = c.uid();
-                        //trace!("{} client: sending payload on port {}", thread_id, cdata.client_port);
-                        let mut buf = [0u8;16];
-                        serialize_into(& mut buf[..], &cdata).expect("cannot serialize");
-                        //let buf = serialize(&cdata).unwrap();
-                        make_payload_packet(&mut pdu, c, &mut hs, &me, &servers, &buf);
-                        c.inc_sent_payload_pkts();
-                        counter_c[TcpStatistics::SentPayload] += 1;
-                        // requeue
-                        ready_connection = Some(c.port());
-                        group_index = 1;
-                    } else if pp == fin_by_client && c.state() < TcpState::CloseWait {
-                        generate_fin(&mut pdu, c, &mut hs, &me, &servers, &mut counter_c[TcpStatistics::SentFin]);
-                        c.set_release_cause(ReleaseCause::ActiveClose);
-                        c.push_state(TcpState::FinWait1);
-                        group_index = 1;
-                    }
-                    */
+                    let b_fin= !set_payload(pdu, c, Some(cdata), &fin_by_client);
                     if !b_fin {
                         c.inc_sent_payload_pkts();
                         counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
@@ -841,7 +824,7 @@ pub fn setup_generator<FPL>(
                                             syn_received(pdu, c);
                                             c.set_server_index(rxq as usize); // we misuse this field for the queue number
                                             c.wheel_slot_and_index = wheel_s.schedule(
-                                                &(timeouts.established.unwrap() * system_data.cpu_clock / 1000),
+                                                &(timeouts.established.unwrap() * frequency / 1000),
                                                 c.sock().unwrap(),
                                             );
                                             counter_s[TcpStatistics::SentSynAck] += 1;
@@ -885,7 +868,7 @@ pub fn setup_generator<FPL>(
                                         TcpState::SynReceived => {
                                             c.push_state(TcpState::Established);
                                             counter_s[TcpStatistics::RecvSynAck2] += 1;
-                                            debug!("{} server: connection from DUT ({:?}) established", thread_id, src_sock);
+                                            debug!("{} server: connection from DUT ({:?}) established at {}", thread_id, src_sock, now());
                                             #[cfg(feature = "profiling")]
                                             profiler.add_diff(2, timestamp_entry);
                                         }
@@ -923,7 +906,7 @@ pub fn setup_generator<FPL>(
                                 } else {
                                     //trace!("server: reply with payload");
                                 }
-                                // sets also c.ackn_nxt
+                                // currently just returns the received payload, sets also c.ackn_nxt
                                 s_reply_with_payload(pdu, &mut c, b_fin);
                                 counter_s[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                 c.inc_sent_payload_pkts();
@@ -1011,11 +994,12 @@ pub fn setup_generator<FPL>(
                                             c.push_state(TcpState::Established);
                                             ready_connection = Some(c.port());
                                             debug!(
-                                                "{} client: connection for port {} to DUT ({:?}, {:?}) established ",
+                                                "{} client: connection for port {} to DUT ({:?}, {:?}) established at {}",
                                                 thread_id,
                                                 c.port(),
                                                 Ipv4Addr::from(src_sock.0),
-                                                src_sock.1
+                                                src_sock.1,
+                                                now()
                                             );
                                             synack_received(pdu, &mut c);
                                             counter_c[TcpStatistics::SentSynAck2] += 1;

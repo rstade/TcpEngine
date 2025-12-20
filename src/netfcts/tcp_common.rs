@@ -246,8 +246,8 @@ pub trait UserData: Send + Sync + 'static {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// connection data sent as first payload packet by the traffic generator to the DUT, e.g., DelayedProxy
 pub struct CData {
-    // connection data sent as first payload packet
     pub reply_socket: SocketAddrV4, // the socket on which the tcpengine expects the reply from the DUT
     pub client_port: u16,
     pub uuid: u64,

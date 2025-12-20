@@ -1,18 +1,21 @@
 [netbricks]
-name        = "TcpEngine"
-master_core = 0
+name        = "tcpgen"
+master_core = 1
 pool_size   = 2048              # default 2048
 cache_size  = 128               # default 32
-cores       = [  1, 2, 6, 7, ]
+cores       = [  4, 5 ]
 ports       = [ 
-                    { name="7:00.0", rxd= 4096, txd= 4096, cores = [ 1, 2, 6, 7, ],  checksum = false, kni="virtio:virtio_user0", fdir = { pballoc="RteFdirPballoc256k", mode="RteFdirModePerfect", ipv4_mask= {src_ip="0.0.0.0", dst_ip="FFFFFFFF"}, src_port_mask="0", dst_port_mask="E000"}, flow_steering= "Port"  },
-                    { name="virtio:virtio_user0,path=/dev/vhost-net,iface=tap01,queues={},queue_size=1024", rxd=64, txd=64, cores = [1], k_cores = [0], namespace="virtio01", mac="a0:36:9f:82:9c:fc", ipnet="192.168.222.2/24"  }
+    { name="72:00.0", rxd= 4096, txd= 4096, cores = [ 4, 5 ],  checksum = false, kni="virtio:virtio_user0", fdir = { pballoc="RteFdirPballoc256k", mode="RteFdirModePerfect", ipv4_mask= {src_ip="0.0.0.0", dst_ip="FFFFFFFF"}, src_port_mask="0", dst_port_mask="8000"}, flow_steering= "Port"  },
+    { name="virtio:virtio_user0,path=/dev/vhost-net,iface=tap01,queues={},queue_size=1024", rxd=1024, txd=1024, cores = [1], k_cores = [0], namespace="nsvirtio01", mac="a0:36:9f:82:9c:fc", ipnet="192.168.222.1/24"  }
               ] 
 [engine]
-engine      = { mode = "DelayedProxy", port=20001, timeouts= { established= 10000 }, cps_limit=1, max_open= 2000, detailed_records = false, fin_by_client= 1000, fin_by_server= 1   }
+# fin_by_client gives the number of payload packets the client side of the generator tries to send before it closes the connection with FIN
+# fin_by_server gives the number of payload packets the server side of the generator tries to send back to the client before it closes the connection with FIN
+# max_open is the maximum number of concurrently open connections that is allowed
+# cps_limit is a limit on the connections per second
+# with detailed_records=true a connection record file is created
+engine      = { mode = "TrafficGenerator", port=12345, timeouts= { established= 2000 }, cps_limit=300000, max_open= 2000, detailed_records = false, fin_by_client= 1000, fin_by_server= 1   }
 targets     = [
-                #{ id = "proxy0", ip = "192.168.222.8", mac="3c:fd:fe:9e:ce:4c" , port = 19999 },   # address of TCP proxy on the other server
-                { id = "webserver1", ip = "192.168.222.32", mac="a0:36:9f:82:9c:fe" , port = 10000 },   # address of linux-i/f enp7s0f1 on same server
-              ]
-
+      { id = "proxy_1", ipnet = "192.168.222.100/24", mac="a0:36:9f:82:9c:fe" , port = 999 },   # address of proxy on same server at other NIC port
+]
 test_size   = 10000

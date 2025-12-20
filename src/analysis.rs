@@ -17,6 +17,16 @@ use crate::netfcts::io::print_tcp_counters;
 #[cfg(feature = "profiling")]
 use crate::netfcts::io::print_rx_tx_counters;
 use crate::netfcts::tcp_common::TcpCounter;
+use std::time::SystemTime;
+
+/// Generate a unique filename for connection records with engine name and timestamp
+pub fn generate_c_records_filename(engine_name: &str) -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    format!("c_records.{}.{}.txt", engine_name, timestamp)
+}
 
 /// Print performance information derived from start/stop stamps reported by pipelines.
 pub fn print_performance_from_stamps(
@@ -74,9 +84,14 @@ pub fn evaluate_records(
     con_records_c: &mut Vec<(PipelineId, Store64<Extension>)>,
     con_records_s: &mut Vec<(PipelineId, Store64<Extension>)>,
     cpu_clock: u64,
+    engine_name: &str,
 ) {
     println!("\nperformance data derived from connection records:");
-    let mut f = BufWriter::new(File::create("c_records.txt").expect("couldn't create c_records.txt"));
+    println!("Client records: {} ", con_records_c.len());
+    println!("Server records: {} ", con_records_s.len());
+
+    let filename = generate_c_records_filename(engine_name);
+    let mut f = BufWriter::new(File::create(&filename).expect(&format!("couldn't create {}", filename)));
 
     let mut min_total: Option<ConRecord> = None;
     let mut max_total: Option<ConRecord> = None;

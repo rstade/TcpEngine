@@ -54,7 +54,7 @@ pub fn setup_tcp_proxy<F1, F2>(
     let servers: Vec<L234Data> = ctx.servers.clone();
     let pipeline_id = ctx.pipeline_id.clone();
     debug!("enter setup_forwarder {}", pipeline_id);
-    let tx = run_configuration.remote_sender.clone();
+    let tx2runtime = run_configuration.remote_sender.clone();
     let mut cm: ConnectionManager = ctx.cm;
     let timeouts = ctx.timeouts;
     let mut wheel = ctx.wheel;
@@ -68,7 +68,7 @@ pub fn setup_tcp_proxy<F1, F2>(
     let thread_id = format!("<c{}, rx{}>: ", core, pci.port_queue.rxq());
     let tcp_min_port = cm.tcp_port_base();
     let me_clone = me.clone();
-    let tx_clone = tx.clone();
+    let tx2runtime_clone = tx2runtime.clone();
     let pipeline_ip = cm.ip();
     let pipeline_id_clone = pipeline_id.clone();
     let mut counter_c = TcpCounter::new();
@@ -80,18 +80,18 @@ pub fn setup_tcp_proxy<F1, F2>(
     // (before moving `mode` into closures below).
     if let Some(consumer) = delayed_mode.as_mut().and_then(|m| m.take_bypass_consumer()) {
         let uuid_consumer = tasks::install_task(sched, "BypassPipe", consumer.send(pci.clone()));
-        tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_consumer, TaskType::BypassPipe))
+        tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_consumer, TaskType::BypassPipe))
             .unwrap();
     }
 
     // set up the generator producing timer tick packets with our private EtherType
     let (producer_timerticks, consumer_timerticks) = new_mpsc_queue_pair();
-    let tick_generator = tasks::TickGenerator::new(producer_timerticks, &me.l234, system_data.cpu_clock / 100); // 10 ms
+    let tick_generator = tasks::TickGenerator::new(producer_timerticks, &me.l234, system_data.tsc_frequency / 100); // 10 ms
     assert!(wheel.resolution() >= tick_generator.tick_length());
     let wheel_tick_reduction_factor = wheel.resolution() / tick_generator.tick_length();
     let mut ticks = 0;
     let uuid_tick_generator = tasks::install_task(sched, "TickGenerator", tick_generator);
-    tx.send(MessageFrom::Task(
+    tx2runtime.send(MessageFrom::Task(
         pipeline_id.clone(),
         uuid_tick_generator,
         TaskType::TickGenerator,
@@ -190,7 +190,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                         &mut cm,
                         &mut wheel,
                         &rx,
-                        &tx_clone,
+                        &tx2runtime_clone,
                         &pipeline_id_clone,
                         &counter_c,
                         &counter_s,
@@ -244,7 +244,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                                         counter_c[TcpStatistics::SentSynAck] += 1;
                                         c.c_push_state(TcpState::SynSent);
                                         counter_c[TcpStatistics::RecvSyn] += 1;
-                                        c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
+                                        c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.tsc_frequency / 1000), c.port());
                                         group_index = 1;
                                         #[cfg(feature = "profiling")]
                                         profiler.add_diff(2, timestamp_entry);
@@ -261,7 +261,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                                         trace!("{} forward SYN to server, L3: { }, L4: { }", thread_id, pdu.headers().ip(1), pdu.headers().tcp(2));
                                         c.c_push_state(TcpState::SynSent);
                                         counter_c[TcpStatistics::RecvSyn] += 1;
-                                        c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.cpu_clock / 1000), c.port());
+                                        c.wheel_slot_and_index = wheel.schedule(&(timeouts.established.unwrap() * system_data.tsc_frequency / 1000), c.port());
                                         group_index = 1;
                                         #[cfg(feature = "profiling")]
                                         profiler.add_diff(2, timestamp_entry);
@@ -612,10 +612,10 @@ pub fn setup_tcp_proxy<F1, F2>(
     .send(pci.clone());
 
     let uuid_pipe2kni = tasks::install_task(sched, "Pipe2Kni", pipe2kni);
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::Pipe2Kni))
+    tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::Pipe2Kni))
         .unwrap();
 
     let uuid_pipe2pic = tasks::install_task(sched, "Pipe2Pci", pipe2pci);
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pic, TaskType::Pipe2Pci))
+    tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pic, TaskType::Pipe2Pci))
         .unwrap();
 }

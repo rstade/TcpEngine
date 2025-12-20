@@ -407,7 +407,7 @@ pub fn make_context(
     let cm: ConnectionManager = ConnectionManager::new(pci.port_queue.clone(), *l4flow_for_this_core, detailed_records);
 
     let mut timeouts = Timeouts::default_or_some(&engine_config.timeouts);
-    let wheel = make_timer_wheel_and_fix_timeouts(&mut timeouts, system_data.cpu_clock);
+    let wheel = make_timer_wheel_and_fix_timeouts(&mut timeouts, system_data.tsc_frequency);
 
     // Reverse channel
     let rx_runtime = setup_reverse_channel(&pipeline_id, run_configuration);

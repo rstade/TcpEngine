@@ -70,12 +70,12 @@ use crate::proxy_helper::{DelayedMode, PduAllocator};
 
 // Replacement for former `trait alias` of a function-like constraint
 pub trait FnPayload:
-    Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize + Send + Sync + Clone + 'static
+    Fn(&mut Pdu, &mut Connection, Option<CData>, &usize) -> bool + Send + Sync + Clone + 'static
 {
 }
 
 impl<T> FnPayload for T where
-    T: Fn(&mut Pdu, &mut Connection, Option<CData>, &mut bool, &usize) -> usize + Send + Sync + Clone + 'static
+    T: Fn(&mut Pdu, &mut Connection, Option<CData>, &usize) -> bool + Send + Sync + Clone + 'static
 {
 }
 
@@ -399,40 +399,59 @@ pub fn get_server_addresses(configuration: &Configuration) -> Vec<L234Data> {
 
 /// return the closure which creates the network function graph for the tcp generator (server and client)
 pub fn get_tcp_generator_nfg() -> impl FnNetworkFunctionGraph {
-    // set_payload sets up the tcp payload packet in the tcp client
-    fn set_payload(p: &mut Pdu, c: &mut Connection, cdata: Option<CData>, b_fin: &mut bool, fin_by_client: &usize) -> usize {
+    
+    
+    
+    /// set_payload is either called when a payload packet is injected, or when a payload packet is received on the client side
+    /// from the DUT. It returns false if we should send FIN because the limit fin_by_client is hit, true otherwise.
+    fn set_payload(p: &mut Pdu, c: &mut Connection, cdata: Option<CData>, fin_by_client: &usize) -> bool {
         let pp = c.sent_payload_pkts();
-        if pp < 1 {
-            // this is the first payload packet sent by client, headers are already prepared with client and server addresses and ports
-            let sz;
-            let mut buf = [0u8; 16];
-            {
-                let ip = p.headers_mut().ip_mut(1);
-                serialize_into(&mut buf[..], &cdata.unwrap()).expect("cannot serialize");
-                sz = buf.len();
-                let ip_sz = ip.length();
-                ip.set_length(ip_sz + sz as u16);
+        let state = c.state();
+    
+        match (pp, state) {
+            // this is the first payload packet to be sent by client side; headers are already prepared with client and server addresses and ports
+            (0, _) => {
+                let sz;
+                let mut buf = [0u8; 16];
+                {
+                    let ip = p.headers_mut().ip_mut(1);
+                    serialize_into(&mut buf[..], &cdata.unwrap()).expect("cannot serialize");
+                    sz = buf.len();
+                    let ip_sz = ip.length();
+                    ip.set_length(ip_sz + sz as u16);
+                }
+                p.add_to_payload_tail(sz).expect("insufficient tail room");
+                p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
+                tcp_payload_size(p);
+                true
             }
-            p.add_to_payload_tail(sz).expect("insufficient tail room");
-            p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
-            return tcp_payload_size(p);
-        } else if pp == *fin_by_client && c.state() < TcpState::CloseWait {
-            strip_payload(p);
-            *b_fin = true;
-            return 0;
-        } else if pp < *fin_by_client && c.state() < TcpState::CloseWait {
-            strip_payload(p);
-            let stamp = unsafe { _rdtsc() };
-            let buf = stamp.to_be_bytes();
-            let ip_sz = p.headers().ip(1).length();
-            p.add_to_payload_tail(buf.len()).expect("insufficient tail room for u64");
-            p.headers_mut().ip_mut(1).set_length(ip_sz + buf.len() as u16);
-            p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
-            return tcp_payload_size(p);
+    
+            // becomes FIN packet
+            (pp_val, state_val) if pp_val == *fin_by_client && state_val < TcpState::CloseWait => {
+                strip_payload(p);
+                false
+            }
+    
+            // normal payload packet before FIN
+            (pp_val, state_val) if pp_val < *fin_by_client && state_val < TcpState::CloseWait => {
+                strip_payload(p);
+                let stamp = unsafe { _rdtsc() };
+                let buf = stamp.to_be_bytes();
+                let ip_sz = p.headers().ip(1).length();
+                p.add_to_payload_tail(buf.len()).expect("insufficient tail room for u64");
+                p.headers_mut().ip_mut(1).set_length(ip_sz + buf.len() as u16);
+                p.copy_payload_from_u8_slice(&buf, 2); // 2 -> tcp_payload
+                true
+            }
+    
+            // all other cases
+            _ => {
+                true
+            }
         }
-        0
     }
-
+    
+    
     move |core: i32,
           pci: Option<PciQueueType>,
           kni: Option<KniQueueType>,

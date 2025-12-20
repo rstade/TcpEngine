@@ -247,6 +247,8 @@ where
         let (remote_sender, local_receiver) = channel::<MessageFrom<TStore>>();
         let (local_sender, remote_receiver) = channel::<MessageTo<TStore>>();
 
+        // this calls also DPDK EAL
+        info!("initializing DPDK ...");
         match initialize_system(&netbricks_configuration)
             .map_err(|e| e.into())
             .and_then(|ctxt| RunTime::<T, TStore>::check_system(ctxt))

@@ -1,4 +1,4 @@
-use std::arch::x86_64::_rdtsc;
+use std::arch::x86_64::{__cpuid, _rdtsc};
 use std::clone::Clone;
 use std::cmp::min;
 use std::fmt::Debug;
@@ -15,6 +15,7 @@ pub fn duration_to_micros(dur: &Duration) -> u64 {
 }
 
 */
+
 
 pub struct TimerWheel<T>
 where
@@ -138,32 +139,17 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::__cpuid;
 
-    fn get_tsc_frequency() -> Option<u64> {
-        unsafe {
-            // CPUID Leaf 0x15: TSC/Crystal Clock Information
-            let result = __cpuid(0x15);
 
-            if result.ebx == 0 || result.eax == 0 {
-                return None;
-            }
-
-            // TSC frequency = (crystal_freq * ebx) / eax
-            let crystal_freq = result.ecx; // in Hz
-            let tsc_freq = (crystal_freq as u64 * result.ebx as u64) / result.eax as u64;
-
-            Some(tsc_freq)
-        }
-    }
 
     #[test]
     fn event_timing() {
         let system_data = SystemData::detect();
-        let frequency: u64 = get_tsc_frequency().unwrap_or(system_data.cpu_clock); // system_data.cpu_clock may be largely off
+        let frequency: u64 = system_data.tsc_frequency; // 
         let cycles_per_milli: u64 = frequency / 1000; // cycles per millisecond
 
         println!(
             "System data cpu clock = {:?}, cycles per millisecond = {:?}",
-            system_data.cpu_clock, cycles_per_milli
+            system_data.tsc_frequency, cycles_per_milli
         );
 
         let start = unsafe { _rdtsc() };
@@ -223,7 +209,7 @@ mod tests {
     #[test]
     fn replace_element_in_timer_wheel() {
         let system_data = SystemData::detect();
-        let milli_to_cycles: u64 = system_data.cpu_clock / 1000;
+        let milli_to_cycles: u64 = system_data.tsc_frequency / 1000;
 
         let mut wheel: TimerWheel<u16> = TimerWheel::new(128, 16 * milli_to_cycles, 128);
         // populate

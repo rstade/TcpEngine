@@ -29,6 +29,7 @@ use tcp_lib::netfcts::io::{print_tcp_counters, print_rx_tx_counters};
 use tcp_lib::netfcts::conrecord::{HasTcpState, ConRecord};
 use tcp_lib::netfcts::comm::{MessageFrom, MessageTo};
 use tcp_lib::netfcts::recstore::Extension;
+use tcp_lib::analysis::generate_c_records_filename;
 use tcp_lib::{
     EngineMode, get_delayed_tcp_proxy_nfg, get_simple_tcp_proxy_nfg, initialize_engine, ProxyConnection, setup_pipelines,
     configure_interfaces,
@@ -298,8 +299,14 @@ fn tcp_proxy() {
         println!("\ncompleted connections c/s: {}/{}\n", completed_count_c, completed_count_s);
 
         // write connection records into file
-        let file = match File::create("c_records.txt") {
-            Err(why) => panic!("couldn't create c_records.txt: {}", why),
+        let engine_name = match mode {
+            EngineMode::TrafficGenerator => "TrafficGenerator",
+            EngineMode::DelayedProxy => "DelayedProxy",
+            EngineMode::SimpleProxy => "SimpleProxy",
+        };
+        let filename = generate_c_records_filename(engine_name);
+        let file = match File::create(&filename) {
+            Err(why) => panic!("couldn't create {}: {}", filename, why),
             Ok(file) => file,
         };
         let mut f = BufWriter::new(file);

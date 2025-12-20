@@ -336,13 +336,14 @@ impl ConnectionManagerC {
         };
         // we use the port max_tcp_port for returning traffic to us, do not add it to free_ports
         info!(
-            "created ConnectionManager {} for port {}, rxq {}, ip= {}, tcp ports {} - {}",
+            "created ConnectionManagerC {} for port {}, recv queue rxq {}, ip= {}, tcp ports {} - {}, listening on port {}",
             old_manager_count,
             cm.pci.port_id(),
             cm.pci.rxq(),
             Ipv4Addr::from(ip),
             if tcp_port_base == 0 { 1 } else { tcp_port_base },
             max_tcp_port - 1,
+            max_tcp_port,
         );
         cm
     }

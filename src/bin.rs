@@ -225,9 +225,14 @@ pub fn main() {
     let start_stop_stamps: HashMap<PipelineId, (u64, u64)> = collected.start_stop_stamps;
     let mut con_records_s: Vec<(PipelineId, Store64<Extension>)> = Vec::with_capacity(64);
     let mut con_records_c: Vec<(PipelineId, Store64<Extension>)> = Vec::with_capacity(64);
+    info!("Processing {} c/s connection record pairs", collected.con_records.len());
     for (pid, (c_opt, s_opt)) in collected.con_records.into_iter() {
-        if let (Some(c), Some(s)) = (c_opt, s_opt) {
+        if let Some(c) = c_opt {
+            info!("Pipeline {}: {} client records", pid, c.len());
             con_records_c.push((pid.clone(), c));
+        }
+        if let Some(s) = s_opt {
+            info!("Pipeline {}: {} server records", pid, s.len());
             con_records_s.push((pid, s));
         }
     }
@@ -245,7 +250,7 @@ pub fn main() {
     );
 
     if start_stop_stamps.len() > 0 {
-        print_performance_from_stamps(run_configuration.system_data.cpu_clock, nr_connections, start_stop_stamps);
+        print_performance_from_stamps(run_configuration.system_data.tsc_frequency, nr_connections, start_stop_stamps);
     }
 
     if run_configuration
@@ -254,10 +259,16 @@ pub fn main() {
         .detailed_records
         .unwrap_or(false)
     {
+        let engine_name = match mode {
+            EngineMode::TrafficGenerator => "TrafficGenerator",
+            EngineMode::DelayedProxy => "DelayedProxy",
+            EngineMode::SimpleProxy => "SimpleProxy",
+        };
         evaluate_records(
             &mut con_records_c,
             &mut con_records_s,
-            run_configuration.system_data.cpu_clock,
+            run_configuration.system_data.tsc_frequency,
+            engine_name,
         );
     }
 

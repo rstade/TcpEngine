@@ -13,7 +13,7 @@ use crate::netfcts::recstore::{Store64, Extension};
 
 #[derive(Debug)]
 pub enum TaskType {
-    TcpGenerator = 0,
+    PacketGenerator = 0,
     Pipe2Kni = 1,
     Pipe2Pci = 2,
     TickGenerator = 3,
@@ -30,6 +30,7 @@ pub fn install_task<T: Executable + 'static>(sched: &mut StandaloneScheduler, ta
 pub struct PacketInjector {
     packet_prototype: Pdu,
     producer: MpscProducer,
+    /// no_packets=0 means unlimited
     no_packets: usize,
     sent_packets: usize,
     // in cycles
