@@ -474,6 +474,7 @@ impl DelayedMode {
             assert!(ok);
             // Replace borrowed packet (p) with SYN packet; old p becomes owned as old_p
             let old_p = p.replace(syn);
+            // trace!("old_p.refcnt()= {}", old_p.refcnt());
             // Capture IP/TCP headers from old_p
             ip = old_p.headers().ip(1).clone();
             tcp = old_p.headers().tcp(2).clone();

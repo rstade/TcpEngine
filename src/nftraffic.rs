@@ -10,7 +10,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::arch::x86_64::_rdtsc;
 
 use uuid::Uuid;
-use bincode::{deserialize, serialize_into};
+use bincode::{deserialize};
 use separator::Separatable;
 
 use crate::tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
@@ -21,7 +21,6 @@ use crate::netfcts::tcp_common::{
 };
 
 #[cfg(feature = "profiling")]
-//use crate::netfcts::utils::TimeAdder;
 use crate::netfcts::comm::{MessageFrom, MessageTo};
 use crate::netfcts::tasks::TaskType;
 use crate::netfcts::utils::Timeouts;
@@ -38,6 +37,7 @@ use std::convert::TryFrom;
 use crate::netfcts::comm::PipelineId;
 use crate::netfcts::recstore::{Extension, Store64};
 use crate::profiling::Profiler;
+use crate::proxy_helper::start_kni_forwarder;
 
 const MIN_FRAME_SIZE: usize = 60;
 
@@ -45,6 +45,24 @@ const TIMER_WHEEL_RESOLUTION_MS: u64 = 10;
 const TIMER_WHEEL_SLOTS: usize = 1002;
 const TIMER_WHEEL_SLOT_CAPACITY: usize = 2500;
 const SEQN_SHIFT: usize = 4;
+
+/// Packet routing groups for the L4 group_by closure
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PacketGroup {
+    /// Drop/dump the packet
+    Dump = 0,
+    /// Send packet to PCI interface
+    Pci = 1,
+    /// Send packet to KNI interface
+    Kni = 2,
+}
+
+impl From<PacketGroup> for usize {
+    fn from(group: PacketGroup) -> usize {
+        group as usize
+    }
+}
 
 pub fn setup_generator<FPL>(
     core: i32,
@@ -62,7 +80,7 @@ pub fn setup_generator<FPL>(
         .get(&pci.port_queue.port_id())
         .unwrap()
         .get_flow(pci.port_queue.rxq());
-    me.ip = l4flow_for_this_core.ip; // in case we use destination IP address for flow steering
+    me.ip = l4flow_for_this_core.ip; // in case we use the destination IP address for flow steering
     let engine_config = &run_configuration.engine_configuration.engine;
 
     me.port = engine_config.port;
@@ -129,12 +147,14 @@ pub fn setup_generator<FPL>(
     // we send the transmitter to the remote receiver of our messages, i.e. the RunTime
     tx.send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
 
-    let forward2pci = ReceiveBatch::new(kni.clone()).send(pci.clone());
-    let uuid = Uuid::new_v4();
-    let name = String::from("Kni2Pci");
-    sched.add_runnable(Runnable::from_task(uuid, name, forward2pci).move_ready());
 
-    // install_task(sched, "Kni2Pci", forward2pci);
+    start_kni_forwarder(sched, &kni, &pci, "Kni2Pci");
+    // forward packets from kni to pci (SendBatch is an Executable)
+    //let forward2pci = ReceiveBatch::new(kni.clone()).send(pci.clone());
+    //let uuid = Uuid::new_v4();
+    //let name = String::from("Kni2Pci");
+    //sched.add_runnable(Runnable::from_task(uuid, name, forward2pci).move_ready());
+
 
     let thread_id = format!("<c{}, rx{}>: ", core, pci.port_queue.rxq());
     let tx_clone = tx.clone();
@@ -529,7 +549,7 @@ pub fn setup_generator<FPL>(
 
         // returns true if a FIN is to be sent
         let c_recv_payload = |p: &mut Pdu, c: &mut Connection| {
-            let b_fin = !set_payload(p, c, None, &fin_by_client);
+            let b_fin = fin_by_client == 0 || !set_payload(p, c, None, &fin_by_client);
             if !b_fin {
                 c.inc_sent_payload_pkts();
                 p.headers_mut().tcp_mut(2).set_seq_num(c.seqn_nxt);
@@ -555,11 +575,11 @@ pub fn setup_generator<FPL>(
             if !b_private_etype {
                 if mac_header.dst != me.mac && !mac_header.dst.is_multicast() && !mac_header.dst.is_broadcast() {
                     debug!("{} from pci: discarding because mac unknown: {} ", thread_id, mac_header);
-                    return 0;
+                    return PacketGroup::Dump.into();
                 }
                 if mac_header.etype() != 0x0800 && !b_private_etype {
                     // everything other than Ipv4 or our own packets we send to KNI, i.e. group 2
-                    return 2;
+                    return PacketGroup::Kni.into();
                 }
             }
         }
@@ -569,7 +589,7 @@ pub fn setup_generator<FPL>(
             if !b_private_etype {
                 // everything other than TCP, and everything not addressed to us we send to KNI, i.e. group 2
                 if ip_header.protocol() != 6 || ip_header.dst() != pipeline_ip && ip_header.dst() != me.ip {
-                    return 2;
+                    return PacketGroup::Kni.into();
                 }
             }
         }
@@ -577,7 +597,7 @@ pub fn setup_generator<FPL>(
         if csum_offload {
             pdu.set_tcp_ipv4_checksum_tx_offload();
         }
-        let mut group_index = 0usize; // the index of the group to be returned, default 0: dump packet
+        let mut group_index = PacketGroup::Dump; // the index of the group to be returned, default: dump packet
 
         let src_sock = (pdu.headers().ip(1).src(), pdu.headers().tcp(2).src_port());
         let dst_sock = (pdu.headers().ip(1).dst(), pdu.headers().tcp(2).dst_port());
@@ -585,7 +605,7 @@ pub fn setup_generator<FPL>(
         //check ports
         if !b_private_etype && pdu.headers().tcp(2).dst_port() != me.port && pdu.headers().tcp(2).dst_port() < tcp_port_base
         {
-            return 2;
+            return PacketGroup::Kni.into();
         }
 
         // if set by the following tcp state machine,
@@ -619,7 +639,7 @@ pub fn setup_generator<FPL>(
                             c.push_state(TcpState::SynSent);
                             c.wheel_slot_and_index =
                                 wheel_c.schedule(&(timeouts.established.unwrap() * frequency / 1000), c.port());
-                            group_index = 1;
+                            group_index = PacketGroup::Pci;
                             #[cfg(feature = "profiling")]
                             profiler.add_diff(4, timestamp_entry);
                         }
@@ -640,7 +660,7 @@ pub fn setup_generator<FPL>(
                     prepare_payload_packet(c, pdu, &me, &servers);
                     cdata.client_port = c.port();
                     cdata.uuid = c.uid();
-                    let b_fin= !set_payload(pdu, c, Some(cdata), &fin_by_client);
+                    let b_fin= fin_by_client == 0 || !set_payload(pdu, c, Some(cdata), &fin_by_client);
                     if !b_fin {
                         c.inc_sent_payload_pkts();
                         counter_c[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
@@ -653,13 +673,13 @@ pub fn setup_generator<FPL>(
                         prepare_checksum_and_ttl(pdu);
                         // requeue
                         // ready_connection = Some(c.port());
-                        group_index = 1;
+                        group_index = PacketGroup::Pci;
                     } else {
                         generate_fin(pdu, c, &me, &servers);
                         counter_c[TcpStatistics::SentFin] += 1;
                         c.set_release_cause(ReleaseCause::ActiveClose);
                         c.push_state(TcpState::FinWait1);
-                        group_index = 1;
+                        group_index = PacketGroup::Pci;
                     }
                     #[cfg(feature = "profiling")]
                     profiler.add_diff(5, timestamp_entry);
@@ -828,7 +848,7 @@ pub fn setup_generator<FPL>(
                                                 c.sock().unwrap(),
                                             );
                                             counter_s[TcpStatistics::SentSynAck] += 1;
-                                            group_index = 1;
+                                            group_index = PacketGroup::Pci;
                                             #[cfg(feature = "profiling")]
                                             profiler.add_diff(1, timestamp_entry);
                                         }
@@ -846,11 +866,11 @@ pub fn setup_generator<FPL>(
                                         if ack_valid {
                                             counter_s[TcpStatistics::RecvAck4Fin] += 1;
                                         }
-                                        group_index = 1;
+                                        group_index = PacketGroup::Pci;
                                     } else {
                                         // DUT wants to close connection
                                         passive_close(pdu, c, &thread_id, &mut counter_s);
-                                        group_index = 1;
+                                        group_index = PacketGroup::Pci;
                                     }
                                     #[cfg(feature = "profiling")]
                                     profiler.add_diff(8, timestamp_entry);
@@ -910,7 +930,7 @@ pub fn setup_generator<FPL>(
                                 s_reply_with_payload(pdu, &mut c, b_fin);
                                 counter_s[TcpStatistics::SentPayload] += tcp_payload_size(pdu);
                                 c.inc_sent_payload_pkts();
-                                group_index = 1;
+                                group_index = PacketGroup::Pci;
                             }
                         }
 
@@ -944,7 +964,7 @@ pub fn setup_generator<FPL>(
                             // hs.tcp.dst_port(),
                         );
                         // we send this to KNI which handles out-of-order TCP, e.g. by sending RST
-                        group_index = 2;
+                        group_index = PacketGroup::Kni;
                     }
                     Some(mut c) => {
                         //debug!("incoming packet for connection {}", c);
@@ -987,7 +1007,7 @@ pub fn setup_generator<FPL>(
 
                             match tcp_flags {
                                 TcpFlags::SynAck => {
-                                    group_index = 1;
+                                    group_index = PacketGroup::Pci;
                                     counter_c[TcpStatistics::RecvSynAck] += 1;
                                     match old_c_state {
                                         TcpState::SynSent => {
@@ -1010,7 +1030,7 @@ pub fn setup_generator<FPL>(
                                         }
                                         _ => {
                                             warn!("{} received SYN-ACK in wrong state: {:?}", thread_id, old_c_state);
-                                            group_index = 0;
+                                            group_index = PacketGroup::Dump;
                                         } // ignore the SynAck
                                     }
                                 }
@@ -1028,10 +1048,10 @@ pub fn setup_generator<FPL>(
                                         if active_close(pdu, c, &mut counter_c, &old_c_state) {
                                             b_release_connection_c = true;
                                         }
-                                        group_index = 1;
+                                        group_index = PacketGroup::Pci;
                                     } else {
                                         passive_close(pdu, c, &thread_id, &mut counter_c);
-                                        group_index = 1;
+                                        group_index = PacketGroup::Pci;
                                     }
                                     #[cfg(feature = "profiling")]
                                     profiler.add_diff(7, timestamp_entry);
@@ -1086,7 +1106,7 @@ pub fn setup_generator<FPL>(
                                             } else {
                                                 counter_c[TcpStatistics::SentFin] += 1;
                                             }
-                                            group_index = 1;
+                                            group_index = PacketGroup::Pci;
                                         }
                                         _ => (),
                                     }
@@ -1097,7 +1117,7 @@ pub fn setup_generator<FPL>(
                                     } else {
                                         counter_c[TcpStatistics::SentFin] += 1;
                                     }
-                                    group_index = 1;
+                                    group_index = PacketGroup::Pci;
                                 }
                                 TcpFlags::Other if !pdu.headers().tcp(2).ack_flag() => {
                                     counter_c[TcpStatistics::Unexpected] += 1;
@@ -1108,7 +1128,7 @@ pub fn setup_generator<FPL>(
                                         c.states(),
                                         pdu.headers().tcp(2),
                                     );
-                                    group_index = 2;
+                                    group_index = PacketGroup::Kni;
                                 }
                                 _ => (),
                             }
@@ -1138,15 +1158,15 @@ pub fn setup_generator<FPL>(
             #[cfg(feature = "profiling")]
             profiler.add_diff(6, timestamp_entry);
         }
-        group_index
+        group_index.into()
     });
 
     // process TCP traffic addressed to us
     let mut l4groups = l2_input_stream.group_by(3, group_by_closure, sched, "L4-Groups".to_string(), uuid_l4groupby_clone);
 
-    let pipe2kni = l4groups.get_group(2).unwrap().send(kni.clone());
-    let l4pciflow = l4groups.get_group(1).unwrap();
-    let l4dumpflow = l4groups.get_group(0).unwrap().drop();
+    let pipe2kni = l4groups.get_group(PacketGroup::Kni.into()).unwrap().send(kni.clone());
+    let l4pciflow = l4groups.get_group(PacketGroup::Pci.into()).unwrap();
+    let l4dumpflow = l4groups.get_group(PacketGroup::Dump.into()).unwrap().drop();
     let pipe2pci = merge_auto(
         vec![Box::new(l4pciflow), Box::new(l4dumpflow)],
         SchedulingPolicy::LongestQueue,

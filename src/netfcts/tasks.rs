@@ -56,7 +56,7 @@ pub const INJECTOR_BATCH_SIZE: usize = 32;
 
 #[inline]
 pub fn private_etype(etype: &u16) -> bool {
-    return *etype == PRIVATE_ETYPE_PACKET || *etype == PRIVATE_ETYPE_TIMER;
+    *etype == PRIVATE_ETYPE_PACKET || *etype == PRIVATE_ETYPE_TIMER
 }
 
 impl<'a> PacketInjector {
@@ -134,7 +134,7 @@ impl<'a> Executable for PacketInjector {
             self.start_time = now;
         }
         let mut inserted = 0;
-        // only enqeue new packets if queue has free slots for a full batch (currently we would otherwise create a memory leak)
+        // only enqueue new packets if the queue has free slots for a full batch (currently we would otherwise create a memory leak)
         if (self.no_packets == 0 || self.sent_packets < self.no_packets)
             && self.producer.free_slots() >= INJECTOR_BATCH_SIZE
             && (now - self.lastbatch_timestamp) >= self.min_inter_batch_gap
@@ -162,9 +162,12 @@ impl<'a> Executable for PacketInjector {
                 // Return without enqueuing anything; the scheduler will soon stop
                 return (0, self.producer.used_slots() as i32);
             }
-            unsafe { mbuf_ptr_array.set_len(INJECTOR_BATCH_SIZE) };
-            for i in 0..INJECTOR_BATCH_SIZE {
-                self.create_packet_from_mbuf(mbuf_ptr_array[i]);
+            unsafe {
+                mbuf_ptr_array.set_len(INJECTOR_BATCH_SIZE);
+                // Copy packet prototype content directly into each allocated mbuf
+                for i in 0..INJECTOR_BATCH_SIZE {
+                    self.packet_prototype.copy_to_mbuf(mbuf_ptr_array[i]);
+                }
             }
             inserted = self.producer.enqueue_mbufs(&mbuf_ptr_array);
             self.sent_packets += inserted;

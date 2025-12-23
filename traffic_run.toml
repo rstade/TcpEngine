@@ -5,7 +5,7 @@ pool_size   = 2048              # default 2048
 cache_size  = 128               # default 32
 cores       = [  4, 5 ]
 ports       = [ 
-    { name="72:00.0", rxd= 4096, txd= 4096, cores = [ 4, 5 ],  checksum = false, kni="virtio:virtio_user0", fdir = { pballoc="RteFdirPballoc256k", mode="RteFdirModePerfect", ipv4_mask= {src_ip="0.0.0.0", dst_ip="FFFFFFFF"}, src_port_mask="0", dst_port_mask="8000"}, flow_steering= "Port"  },
+    { name="72:00.0", rxd= 4096, txd= 4096, cores = [ 4 ],  checksum = false, kni="virtio:virtio_user0", fdir = { pballoc="RteFdirPballoc256k", mode="RteFdirModePerfect", ipv4_mask= {src_ip="0.0.0.0", dst_ip="FFFFFFFF"}, src_port_mask="0", dst_port_mask="0000"}, flow_steering= "Port"  },
     { name="virtio:virtio_user0,path=/dev/vhost-net,iface=tap01,queues={},queue_size=1024", rxd=1024, txd=1024, cores = [1], k_cores = [0], namespace="nsvirtio01", mac="a0:36:9f:82:9c:fc", ipnet="192.168.222.1/24"  }
               ] 
 [engine]
@@ -14,8 +14,8 @@ ports       = [
 # max_open is the maximum number of concurrently open connections that is allowed
 # cps_limit is a limit on the connections per second
 # with detailed_records=true a connection record file is created
-engine      = { mode = "TrafficGenerator", port=12345, timeouts= { established= 2000 }, cps_limit=300000, max_open= 2000, detailed_records = false, fin_by_client= 1000, fin_by_server= 1   }
+engine      = { mode = "TrafficGenerator", port=12345, timeouts= { established= 2000 }, cps_limit=400000, max_open= 2000, detailed_records = false, fin_by_client= 0, fin_by_server= 1   }
 targets     = [
       { id = "proxy_1", ipnet = "192.168.222.100/24", mac="a0:36:9f:82:9c:fe" , port = 999 },   # address of proxy on same server at other NIC port
 ]
-test_size   = 10000
+test_size   = 500000

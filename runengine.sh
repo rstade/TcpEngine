@@ -58,7 +58,7 @@ fi
 # sudo ip -s -s neigh flush all
 
 export RUST_BACKTRACE=1
-export RUST_LOG="tcpengine=info,tcp_lib=info,e2d2=info,netfcts=info"
+export RUST_LOG="tcpengine=info,tcp_lib=info,e2d2=trace,netfcts=info"
 
 # Parse arguments: first is CONFIG, then ENGINE_ARGS until '--', then BUILD_ARGS for cargo
 CONFIG="$1"

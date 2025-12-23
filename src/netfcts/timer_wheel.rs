@@ -1,4 +1,4 @@
-use std::arch::x86_64::{__cpuid, _rdtsc};
+use std::arch::x86_64::{_rdtsc};
 use std::clone::Clone;
 use std::cmp::min;
 use std::fmt::Debug;

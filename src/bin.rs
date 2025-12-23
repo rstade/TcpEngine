@@ -12,11 +12,12 @@ use std::time::{Duration, Instant};
 use rustyline::Editor;
 use rustyline::error::ReadlineError;
 use clap::{Command, Arg, ArgAction};
-use log::info;
+use log::{debug, info};
 use tcp_lib::analysis::{evaluate_records, print_performance_from_stamps, collect_from_main_reply};
 use tcp_lib::netfcts::recstore::{Store64, Extension};
 use std::mem::size_of;
 use std::sync::mpsc::{TryRecvError, channel};
+use e2d2::native::zcsi::mbuf_avail_count;
 
 const STARTUP_DELAY_MS: u64 = 1000;
 const PRINT_DELAY_MS: u64 = 100;
@@ -90,6 +91,11 @@ pub fn main() {
     }
 
     let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
+
+    info!("before run: available mbufs in memory pool= {:6}\n", unsafe {
+        mbuf_avail_count()
+    });
+
     // start the engine by setting all tasks on scheduler threads to ready state
     mtx.send(MessageFrom::StartEngine).unwrap();
 
@@ -198,6 +204,10 @@ pub fn main() {
             thread::sleep(Duration::from_millis(SLEEP_CTRLC_LOOP_MS)); // Sleep for a bit
         }
     }
+
+    info!("after run: available mbufs in memory pool= {:6}", unsafe {
+        mbuf_avail_count()
+    });
 
     if !runtime_exited_early {
         // request performance data

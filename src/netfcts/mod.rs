@@ -877,7 +877,7 @@ pub fn prepare_checksum_and_ttl(p: &mut Pdu) {
         p.set_l2_len(size_of::<MacHeader>() as u64);
         p.set_l3_len(size_of::<IpHeader>() as u64);
         p.set_l4_len(size_of::<TcpHeader>() as u64);
-        debug!(
+        trace!(
             "l234len = {}, {}, {}, ol_flags= 0x{:X}, validate= {}",
             p.l2_len(),
             p.l3_len(),
@@ -902,7 +902,7 @@ pub fn prepare_checksum_and_ttl(p: &mut Pdu) {
             dst = ip.dst();
         }
         update_tcp_checksum_(stack.tcp_mut(2), psz, src, dst);
-        debug!("ip-payload_sz= {}, checksum recalc = {:X}", psz, stack.tcp_mut(2).checksum());
+        trace!("ip-payload_sz= {}, checksum recalc = {:X}", psz, stack.tcp_mut(2).checksum());
     }
 }
 
@@ -932,7 +932,7 @@ pub fn set_header(server: &L234Data, port: u16, p: &mut Pdu, me_mac: &MacAddress
 pub fn remove_tcp_options(p: &mut Pdu) {
     let old_offset = p.headers().tcp(2).offset() as u16;
     if old_offset > 20 {
-        debug!("trimming tcp-options by { } bytes", old_offset - 20);
+        trace!("trimming tcp-options by { } bytes", old_offset - 20);
         p.headers_mut().tcp_mut(2).set_data_offset(5u8);
         // minimum mbuf data length is 60 bytes
         p.headers_mut().ip_mut(1).trim_length_by(old_offset - 20u16);
@@ -941,7 +941,7 @@ pub fn remove_tcp_options(p: &mut Pdu) {
         let trim_by = old_offset - 20;
         let payload_sz = p.payload_size(2); // this may include padding bytes
         let written = p.write_from_tail_down(payload_sz, 0x0u8);
-        debug!("erased {} bytes from a payload of {} bytes", written, payload_sz);
+        trace!("erased {} bytes from a payload of {} bytes", written, payload_sz);
         p.trim_payload_size(trim_by as usize);
     }
 }

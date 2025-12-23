@@ -283,17 +283,17 @@ pub struct ConnectionManagerC {
     ready: VecDeque<u16>,
     /// min number of free ports
     min_free_ports: usize,
-    // ports of connections with data to send and in state Established when enqueued
+    /// ports of connections with data to send and in state Established when enqueued
     port2con: Vec<Connection>,
+    /// the PortQueue for which connections are managed
     pci: PortQueue,
-    // the PortQueue for which connections are managed
     pipeline_id: PipelineId,
     tcp_port_base: u16,
     available_ports_count: usize,
-    // e.g., used as a listen port, not assigned by create
+    /// e.g., used as a listen port, not assigned by create
     listen_port: u16,
+    /// ip address to use for connections of this manager
     ip: u32,
-    // ip address to use for connections of this manager
     /// with or without recording of connections
     detailed_records: bool,
 }
@@ -315,7 +315,7 @@ impl ConnectionManagerC {
         let avail_ports;
         let cm = ConnectionManagerC {
             c_record_store: store,
-            port2con: vec![Connection::new(); (!port_mask + 1) as usize],
+            port2con: vec![Connection::new(); (!port_mask as usize + 1)],
             // port 0 is reserved and not usable for us, ports are shuffled for better load sharing in DUTs
             // max_tcp_port itself is reserved for the server side for listening
             free_ports: {
