@@ -256,31 +256,35 @@ impl CollectedData {
 
 /// Collect replies from the main reply channel into convenient structures.
 /// This unifies the duplicated receive loops in bin.rs and run_test.rs.
-pub fn collect_from_main_reply(reply_mrx: &Receiver<MessageTo<Store64<Extension>>>, timeout_ms: u64) -> CollectedData {
+pub fn collect_from_main_reply(reply_mrx: &Receiver<MessageTo<Store64<Extension>>>, timeout_ms: u64, tsc_frequency: u64) -> CollectedData {
     let mut data = CollectedData::new();
 
     loop {
         match reply_mrx.recv_timeout(Duration::from_millis(timeout_ms as u64)) {
             Ok(MessageTo::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, _rx_tx_stats)) => {
                 // Side-effect prints like before
+                debug!("Received tcp and rx/tx counter data for pipeline {}", pipeline_id);
                 print_tcp_counters(&pipeline_id, &tcp_counter_to, &tcp_counter_from);
                 #[cfg(feature = "profiling")]
                 if let Some(stats) = _rx_tx_stats {
-                    print_rx_tx_counters(&pipeline_id, &stats);
+                    print_rx_tx_counters(&pipeline_id, &stats, tsc_frequency);
                 }
                 data.tcp_counters_to.insert(pipeline_id.clone(), tcp_counter_to);
                 data.tcp_counters_from.insert(pipeline_id, tcp_counter_from);
             }
             Ok(MessageTo::CRecords(pipeline_id, c_records_client, c_records_server)) => {
+                debug!("Received {} connection records for pipeline {}", data.con_records.len(), pipeline_id);
                 data.con_records.insert(pipeline_id, (c_records_client, c_records_server));
             }
             Ok(MessageTo::TimeStamps(p, t_start, t_stop)) => {
+                debug!("Received {} time stamps for pipeline {}", data.start_stop_stamps.len(), p);
                 data.start_stop_stamps.insert(p, (t_start, t_stop));
             }
             Ok(_m) => {
                 error!("illegal MessageTo received from reply_to_main channel");
             }
             Err(RecvTimeoutError::Timeout) => {
+                debug!("Timeout receiving from reply_to_main channel (reply_mrx), stopping data collection.");
                 break;
             }
             Err(e) => {

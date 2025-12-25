@@ -20,6 +20,7 @@ use crate::netfcts::utils::TimeAdder;
 
 use macaddr::MacAddr6 as MacAddress;
 use crate::netfcts::recstore::ProxyRecStore;
+use crate::netfcts::cuckoo::CuckooSocketMap;
 
 pub union Seqn {
     /// seqn_nxt for connection from client to server, only used during connection setup
@@ -330,7 +331,7 @@ pub static GLOBAL_MANAGER_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub struct ConnectionManager {
     record_store: Rc<RefCell<ProxyRecStore>>,
     //    sock2port: Sock2Index,
-    sock2port: BTreeMap<(u32, u16), u16>,
+    sock2port: CuckooSocketMap<u16>,
     #[cfg(feature = "profiling")]
     time_adder: TimeAdder,
     //sock2port: HashMap<(u32, u16), u16>,
@@ -357,7 +358,7 @@ impl ConnectionManager {
         let mut cm = ConnectionManager {
             record_store: store.clone(),
             //            sock2port: Sock2Index::new(),
-            sock2port: BTreeMap::new(),
+            sock2port: CuckooSocketMap::new(65536),
             #[cfg(feature = "profiling")]
             time_adder: TimeAdder::new_with_warm_up("connection initialize", 100000, 100),
             free_ports: {

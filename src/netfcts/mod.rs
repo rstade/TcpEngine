@@ -7,6 +7,7 @@ pub mod io;
 pub mod utils;
 pub mod recstore;
 pub mod conrecord;
+pub(crate) mod cuckoo;
 
 use serde_derive::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -434,7 +435,7 @@ where
                 context.execute_schedulers();
                 setup_kernel_interfaces(&context);
 
-                // communicate with schedulers:
+                // communicate with schedulers and main thread:
                 loop {
                     match mrx.recv_timeout(Duration::from_millis(10)) {
                         Ok(MessageFrom::StartEngine) => {

@@ -347,7 +347,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                                     // First payload in delayed mode
                                     (TcpState::Established, TcpState::Listen, _, true) => {
                                         counter_c[TcpStatistics::RecvPayload] += tcp_payload_size(pdu);
-                                        delayed_mode.as_mut().unwrap().select_server(pdu, &mut c, &me, &servers, &f_select_server);
+                                        delayed_mode.as_mut().unwrap().proxy_select_server(pdu, &mut c, &me, &servers, &f_select_server);
                                         c.s_init();
                                         c.s_push_state(TcpState::SynReceived);
                                         counter_s[TcpStatistics::SentSyn] += 1;
@@ -424,7 +424,7 @@ pub fn setup_tcp_proxy<F1, F2>(
                                 (_, TcpState::SynReceived, TcpFlags::SynAck, true) => {
                                     c.s_push_state(TcpState::Established);
                                     trace!("{} s2c: established two-way client server connection, SYN-ACK received: L3: {}, L4: {}", thread_id, pdu.headers().ip(1), tcp);
-                                    let payload_size = delayed_mode.as_mut().unwrap().on_server_synack(pdu, &mut c);
+                                    let payload_size = delayed_mode.as_mut().unwrap().proxy_on_server_synack(pdu, &mut c);
                                     counter_s[TcpStatistics::SentPayload] += payload_size;
                                     counter_s[TcpStatistics::SentSynAck2] += 1;
                                     group_index = 0;

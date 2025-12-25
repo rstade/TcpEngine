@@ -9,11 +9,11 @@ use crate::netfcts::recstore::Storable;
 use crate::netfcts::tcp_common::tcp_start_state;
 
 #[derive(Clone, Copy, Debug)]
-//#[repr(align(64))]
+#[repr(align(64))]
 pub struct ConRecord {
     base_stamp: u64,
     uid: u64,
-    stamps: [u32; 6],
+    stamps: [u32; 6],  // we store cycle differences as u32 to minimize record size in the cache
     sent_payload_packets: u16,
     recv_payload_packets: u16,
     client_ip: u32,
@@ -27,7 +27,6 @@ pub struct ConRecord {
     server_state: u8,
 }
 
-// we map cycle differences from u64 to u32 to minimize record size in the cache (performance)
 pub const TIME_STAMP_REDUCTION_FACTOR: u64 = 1000;
 
 pub trait HasTcpState {

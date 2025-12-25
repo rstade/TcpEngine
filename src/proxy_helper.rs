@@ -440,8 +440,8 @@ impl DelayedMode {
         self.bypass_consumer.take()
     }
 
-    /// attention: after calling select_server, p points to a different mbuf and has different headers
-    pub fn select_server<FSel: FnProxySelectServer>(
+    /// attention: after calling proxy_select_server, p points to a different mbuf and has different headers
+    pub fn proxy_select_server<FSel: FnProxySelectServer>(
         &mut self,
         p: &mut Pdu,
         c: &mut ProxyConnection,
@@ -504,7 +504,72 @@ impl DelayedMode {
         prepare_checksum_and_ttl(p);
     }
 
-    pub fn on_server_synack(&mut self, p: &mut Pdu, c: &mut ProxyConnection) -> usize {
+
+    /// attention: after calling proxy_select_server, p points to a different mbuf and has different headers
+    pub fn scrubber_syn_to_server(
+        &mut self,
+        p: &mut Pdu,
+        c: &mut ProxyConnection,
+        me: &Me,
+    ) {
+        // Allocate a fresh PDU for crafting the SYN towards the server
+        let mut syn = self.alloc_pdu().expect("DelayedMode: failed to allocate PDU for server SYN");
+
+        let ip;
+        let tcp;
+        let payload_sz;
+        unsafe {
+            // Save clone of the payload packet to connection state (referencing same mbuf)
+            let p_clone = Box::new(p.clone_from_same_mbuf());
+            payload_sz = tcp_payload_size(&p_clone);
+            c.payload_packet = Some(p_clone);
+
+            // Select server via provided closure and compute c2s_inserted_bytes delta
+            // f_select_server(c, servers);
+            c.c2s_inserted_bytes = tcp_payload_size(c.payload_packet.as_ref().unwrap()) as i32 - payload_sz as i32;
+
+            // Set the header for the selected server in the payload packet p
+            // let server = &servers[c.server_index()];
+            // set_header(server, c.port(), p, &me.l234.mac, me.ip_s);
+
+            // Prepare SYN packet by pushing MAC header of p into syn, then swap p to point to syn
+            let ok = syn.push_header(p.headers().mac(0));
+            assert!(ok);
+            // Replace borrowed packet (p) with SYN packet; old p becomes owned as old_p
+            let old_p = p.replace(syn);
+            // trace!("old_p.refcnt()= {}", old_p.refcnt());
+            // Capture IP/TCP headers from old_p
+            ip = old_p.headers().ip(1).clone();
+            tcp = old_p.headers().tcp(2).clone();
+            // Drop of old_p will deref original mbuf automatically
+        }
+
+        // Reconstruct headers on p (the SYN packet)
+        let ok = p.push_header(&ip);
+        assert!(ok);
+        let ok = p.push_header(&tcp);
+        assert!(ok);
+        {
+            let hs = p.headers_mut();
+            hs.ip_mut(1).trim_length_by(payload_sz as u16);
+            let tcp = hs.tcp_mut(2);
+            // Initialize server-side seq number one less than chosen, set SYN, clear ACK/PSH
+            c.seqn.f_seqn = tcp.seq_num().wrapping_sub(1);
+            unsafe {
+                tcp.set_seq_num(c.seqn.f_seqn);
+            }
+            tcp.set_syn_flag();
+            tcp.set_ack_num(0u32);
+            tcp.unset_ack_flag();
+            tcp.unset_psh_flag();
+        }
+
+        prepare_checksum_and_ttl(p);
+    }
+
+
+
+    pub fn proxy_on_server_synack(&mut self, p: &mut Pdu, c: &mut ProxyConnection) -> usize {
         // correction for server side seq numbers
         let delta = c.c_seqn.wrapping_sub(p.headers().tcp(2).seq_num());
         c.c_seqn = delta;

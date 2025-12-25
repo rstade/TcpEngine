@@ -240,7 +240,7 @@ pub fn run_test(test_type: TestType) {
     }
 
     let collected = if !runtime_exited_early {
-        collect_from_main_reply(&reply_mrx, REPLY_TIMEOUT_MS)
+        collect_from_main_reply(&reply_mrx, REPLY_TIMEOUT_MS, run_configuration.system_data.tsc_frequency)
     } else {
         crate::analysis::CollectedData::new()
     };
@@ -258,6 +258,7 @@ pub fn run_test(test_type: TestType) {
             EngineMode::TrafficGenerator => "TrafficGenerator",
             EngineMode::DelayedProxy => "DelayedProxy",
             EngineMode::SimpleProxy => "SimpleProxy",
+            EngineMode::Scrubber => "Scrubber",
         };
         let filename = generate_c_records_filename(engine_name);
         let file = match File::create(&filename) {

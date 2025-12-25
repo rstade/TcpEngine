@@ -251,7 +251,7 @@ fn tcp_proxy() {
             Ok(MessageTo::Counter(pipeline_id, tcp_counter_c, tcp_counter_s, rx_tx_stats)) => {
                 print_tcp_counters(&pipeline_id, &tcp_counter_c, &tcp_counter_s);
                 if rx_tx_stats.is_some() {
-                    print_rx_tx_counters(&pipeline_id, &rx_tx_stats.unwrap());
+                    print_rx_tx_counters(&pipeline_id, &rx_tx_stats.unwrap(), run_configuration.system_data.tsc_frequency);
                 }
                 tcp_counters_c.insert(pipeline_id.clone(), tcp_counter_c);
                 tcp_counters_s.insert(pipeline_id, tcp_counter_s);
@@ -303,6 +303,7 @@ fn tcp_proxy() {
             EngineMode::TrafficGenerator => "TrafficGenerator",
             EngineMode::DelayedProxy => "DelayedProxy",
             EngineMode::SimpleProxy => "SimpleProxy",
+            EngineMode::Scrubber => "Scrubber",
         };
         let filename = generate_c_records_filename(engine_name);
         let file = match File::create(&filename) {

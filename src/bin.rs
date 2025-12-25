@@ -1,10 +1,7 @@
 use e2d2::interface::{Pdu, HeaderStack};
 use tcp_lib::netfcts::comm::{MessageFrom, PipelineId};
 use tcp_lib::netfcts::conrecord::ConRecord;
-use tcp_lib::{
-    Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg,
-    install_pipelines_for_all_cores, configure_interfaces,
-};
+use tcp_lib::{Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg, install_pipelines_for_all_cores, configure_interfaces, get_scrubber_nfg};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -20,15 +17,17 @@ use std::sync::mpsc::{TryRecvError, channel};
 use e2d2::native::zcsi::mbuf_avail_count;
 
 const STARTUP_DELAY_MS: u64 = 1000;
-const PRINT_DELAY_MS: u64 = 100;
+const PRINT_DELAY_MS: u64 = 200;
 const SLEEP_CTRLC_LOOP_MS: u64 = 200;
-const REPLY_TIMEOUT_MS: u64 = 1000;
+const REPLY_TIMEOUT_MS: u64 = 2000;
 const SHUTDOWN_POLL_MS: u64 = 100;
 const SHUTDOWN_MAX_WAIT_MS: u64 = 1000;
 pub fn main() {
     let (mut runtime, mode, running) = initialize_engine(false);
 
     let run_configuration = runtime.run_configuration.clone();
+
+    info!("TSC frequency: {} Hz", run_configuration.system_data.tsc_frequency);
 
     // Option 1: Stop on first error
     match configure_interfaces(&*run_configuration.engine_configuration.targets) {
@@ -56,6 +55,10 @@ pub fn main() {
         EngineMode::SimpleProxy => {
             install_pipelines_for_all_cores(&mut runtime, run_configuration_cloned, get_simple_tcp_proxy_nfg(None))
                 .expect("cannot install pipelines for SimpleProxy");
+        }
+        EngineMode::Scrubber => {
+            install_pipelines_for_all_cores(&mut runtime, run_configuration_cloned, get_scrubber_nfg())
+                .expect("cannot install pipelines for Scrubber");
         }
     };
 
@@ -224,14 +227,18 @@ pub fn main() {
         {
             mtx.send(MessageFrom::FetchCRecords).unwrap();
         }
+        thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
     }
 
     let collected = if !runtime_exited_early {
-        collect_from_main_reply(&reply_mrx, REPLY_TIMEOUT_MS)
+        debug!("Collecting data from runtime ...");
+        collect_from_main_reply(&reply_mrx, REPLY_TIMEOUT_MS, run_configuration.system_data.tsc_frequency)
     } else {
         // empty collected data if runtime already exited
+        debug!("Runtime exited early, skipping data collection.");
         tcp_lib::analysis::CollectedData::new()
     };
+
     let start_stop_stamps: HashMap<PipelineId, (u64, u64)> = collected.start_stop_stamps;
     let mut con_records_s: Vec<(PipelineId, Store64<Extension>)> = Vec::with_capacity(64);
     let mut con_records_c: Vec<(PipelineId, Store64<Extension>)> = Vec::with_capacity(64);
@@ -273,6 +280,7 @@ pub fn main() {
             EngineMode::TrafficGenerator => "TrafficGenerator",
             EngineMode::DelayedProxy => "DelayedProxy",
             EngineMode::SimpleProxy => "SimpleProxy",
+            EngineMode::Scrubber => "Scrubber",
         };
         evaluate_records(
             &mut con_records_c,

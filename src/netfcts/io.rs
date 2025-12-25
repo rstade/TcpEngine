@@ -76,7 +76,7 @@ pub fn print_tcp_counters(pipeline_id: &PipelineId, tcp_counter_to: &TcpCounter,
     println!("{}: server side {}", pipeline_id, tcp_counter_from);
 }
 
-pub fn print_rx_tx_counters(pipeline_id: &PipelineId, rx_tx_stats: &Vec<(u64, usize, usize)>) {
+pub fn print_rx_tx_counters(pipeline_id: &PipelineId, rx_tx_stats: &Vec<(u64, usize, usize)>, tsc_frequency: u64) {
     println!("\n\n");
 
     if rx_tx_stats.len() > 0 {
@@ -92,19 +92,59 @@ pub fn print_rx_tx_counters(pipeline_id: &PipelineId, rx_tx_stats: &Vec<(u64, us
         );
     }
     if rx_tx_stats.len() > 1 {
+        const THRESHOLD: usize = 50;
+        let mut total_delta_cycles = 0u64;
+        let mut total_rx = 0usize;
+        let mut total_tx = 0usize;
+
+        // Find first and last indices where both rx and tx deltas exceed threshold
+        let mut first_index: Option<usize> = None;
+        let mut last_index: Option<usize> = None;
+
         rx_tx_stats
             .iter()
             .zip(&rx_tx_stats[1..])
             .enumerate()
             .for_each(|(i, (&prev, &next))| {
+                let delta_cycles = next.0 - prev.0;
+                let delta_rx = next.1 - prev.1;
+                let delta_tx = next.2 - prev.2;
+
+                total_rx += delta_rx;
+                total_tx += delta_tx;
+
+                // Track first and last index where both deltas exceed threshold
+                if delta_rx > THRESHOLD && delta_tx > THRESHOLD {
+                    if first_index.is_none() {
+                        first_index = Some(i);
+                    }
+                    last_index = Some(i);
+                }
+
                 println!(
                     "{:4}: {:>24} -{:>24} -{:8} {:8}",
                     i + 1,
                     next.0.separated_string(),
-                    (next.0 - prev.0).separated_string(),
-                    (next.1 - prev.1),
-                    (next.2 - prev.2)
+                    delta_cycles.separated_string(),
+                    delta_rx,
+                    delta_tx
                 )
             });
+
+        // Calculate delta cycles only between first and last qualifying entries
+        if let (Some(first), Some(last)) = (first_index, last_index) {
+            if first < last {
+                total_delta_cycles = rx_tx_stats[last + 1].0 - rx_tx_stats[first].0;
+            }
+        }
+
+        // Calculate elapsed time in seconds
+        let elapsed_time_sec = total_delta_cycles as f64 / tsc_frequency as f64;
+
+        println!("\nSummary:");
+        println!("  Total delta cycles: {}", total_delta_cycles.separated_string());
+        println!("  Elapsed time:       {:.6} s", elapsed_time_sec);
+        println!("  Total rx packets:   {}", total_rx);
+        println!("  Total tx packets:   {}", total_tx);
     }
 }

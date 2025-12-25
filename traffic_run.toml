@@ -14,8 +14,8 @@ ports       = [
 # max_open is the maximum number of concurrently open connections that is allowed
 # cps_limit is a limit on the connections per second
 # with detailed_records=true a connection record file is created
-engine      = { mode = "TrafficGenerator", port=12345, timeouts= { established= 2000 }, cps_limit=400000, max_open= 2000, detailed_records = false, fin_by_client= 0, fin_by_server= 1   }
+engine      = { mode = "TrafficGenerator", port=12345, timeouts= { established= 2000 }, cps_limit=2000000, max_open= 2000, detailed_records = false, fin_by_client= 0, fin_by_server= 1   }
 targets     = [
       { id = "proxy_1", ipnet = "192.168.222.100/24", mac="a0:36:9f:82:9c:fe" , port = 999 },   # address of proxy on same server at other NIC port
 ]
-test_size   = 500000
+test_size   = 1000000

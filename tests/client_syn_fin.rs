@@ -194,7 +194,7 @@ fn delayed_binding_proxy() {
             Ok(MessageTo::Counter(pipeline_id, tcp_counter_c, tcp_counter_s, rx_tx_stats)) => {
                 print_tcp_counters(&pipeline_id, &tcp_counter_c, &tcp_counter_s);
                 if rx_tx_stats.is_some() {
-                    print_rx_tx_counters(&pipeline_id, &rx_tx_stats.unwrap());
+                    print_rx_tx_counters(&pipeline_id, &rx_tx_stats.unwrap(), run_configuration.system_data.tsc_frequency);
                 }
                 tcp_counters_c.insert(pipeline_id.clone(), tcp_counter_c);
                 tcp_counters_s.insert(pipeline_id, tcp_counter_s);
