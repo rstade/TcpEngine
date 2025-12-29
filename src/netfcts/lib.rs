@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate log;
+
 pub mod comm;
 pub mod tasks;
 pub mod tcp_common;
@@ -7,7 +10,7 @@ pub mod io;
 pub mod utils;
 pub mod recstore;
 pub mod conrecord;
-pub(crate) mod cuckoo;
+pub mod cuckoo;
 
 use serde_derive::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -45,13 +48,13 @@ use e2d2::native::zcsi::rte_ethdev_api::{
 };
 use serde::de::DeserializeOwned;
 use self::tcp_common::L234Data;
-use crate::netfcts::comm::{MessageFrom, MessageTo};
-use crate::netfcts::comm::PipelineId;
-use crate::netfcts::io::print_hard_statistics;
-use crate::netfcts::recstore::SimpleStore;
-use crate::netfcts::system::SystemData;
-use crate::netfcts::tasks::TaskType;
-use crate::netfcts::tcp_common::tcp_payload_size;
+use crate::comm::{MessageFrom, MessageTo};
+use crate::comm::PipelineId;
+use crate::io::print_hard_statistics;
+use crate::recstore::SimpleStore;
+use crate::system::SystemData;
+use crate::tasks::TaskType;
+use crate::tcp_common::tcp_payload_size;
 
 #[derive(Deserialize, Clone)]
 struct Config<T: Sized + Clone> {
@@ -382,8 +385,8 @@ where
                     return Err(E2d2ErrorKind::FailedToInitializeKni(port.name().to_string()));
                 }
             } else {
-                error!("port {} has no kni interface assigned", port.name());
-                return Err(E2d2ErrorKind::FailedToInitializeKni(port.name().to_string()));
+                info!("port {} has no kni interface assigned", port.name());
+                //return Err(E2d2ErrorKind::FailedToInitializeKni(port.name().to_string()));
             }
         }
         Ok(())

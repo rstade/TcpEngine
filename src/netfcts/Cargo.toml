@@ -1,0 +1,21 @@
+[package]
+name = "netfcts"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "netfcts"
+path = "lib.rs"
+
+[dependencies]
+e2d2 = { version = "=1.0.11", path = "../../../NetBricks/framework", features = ["performance"] }
+log = ">=0.4"
+toml = ">=0.8"
+separator = ">= 0.3"
+serde = ">=1.0"
+serde_derive = ">=1.0"
+macaddr = { version = ">=1.0", features = ["serde"] }
+uuid = { version = ">=0.7", features = ["v4", "serde"] }
+ipnet = ">=2.0"
+rand = ">=0.8"
+

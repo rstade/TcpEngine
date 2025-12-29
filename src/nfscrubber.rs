@@ -44,7 +44,7 @@ pub fn setup_scrubber<F2>(
 ) where
     F2: FnProxyPayload,
 {
-    // Build shared proxy context
+    // Build context
     let ctx = make_context(core, &pci, &kni, sched, &run_configuration);
     let system_data = ctx.system_data.clone();
     let me = ctx.me.clone();

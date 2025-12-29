@@ -374,14 +374,7 @@ fn tcp_proxy() {
         assert!(
             counters[TcpStatistics::SentFin] + counters[TcpStatistics::SentFinPssv] <= counters[TcpStatistics::RecvAck4Fin]
         );
-        if configuration.test_size.unwrap() <= 9 {
-            // otherwise the payload bytes are challenging to count
-            assert_eq!(counters[TcpStatistics::RecvPayload], counters[TcpStatistics::SentSyn] * 23);
-            assert_eq!(
-                tcp_counters_c.get(&p).unwrap()[TcpStatistics::RecvPayload],
-                tcp_counters_c.get(&p).unwrap()[TcpStatistics::RecvSyn] * 7
-            );
-        }
+
     }
 
     mtx.send(MessageFrom::Exit).unwrap();

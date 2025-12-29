@@ -385,7 +385,7 @@ pub fn make_context(
     let l4flow_for_this_core = run_configuration
         .flowdirector_map
         .get(&pci.port_queue.port_id())
-        .unwrap()
+        .unwrap_or_else(|| panic!("no flowdirector for port {}", pci.port_queue.port.name()))
         .get_flow(pci.port_queue.rxq());
 
     let mut me = Me {

@@ -5,9 +5,9 @@ use std::fmt::Display;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::arch::x86_64::_rdtsc;
-use crate::netfcts::conrecord::{ConRecord, HasConData, HasTcpState, TIME_STAMP_REDUCTION_FACTOR};
-use crate::netfcts::tcp_common::ReleaseCause;
-use crate::netfcts::tcp_common::TcpState;
+use crate::conrecord::{ConRecord, HasConData, HasTcpState, TIME_STAMP_REDUCTION_FACTOR};
+use crate::tcp_common::ReleaseCause;
+use crate::tcp_common::TcpState;
 
 use separator::Separatable;
 

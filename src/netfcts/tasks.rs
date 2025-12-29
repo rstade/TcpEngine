@@ -5,11 +5,11 @@ use e2d2::native::zcsi::{mbuf_alloc_bulk, MBuf};
 use e2d2::queues::MpscProducer;
 use e2d2::scheduler::{Executable, Runnable, Scheduler, StandaloneScheduler};
 use uuid::Uuid;
-use crate::netfcts::tcp_common::L234Data;
+use crate::tcp_common::L234Data;
 use log::{warn, error, info};
 use std::sync::mpsc::Sender;
-use crate::netfcts::comm::MessageFrom;
-use crate::netfcts::recstore::{Store64, Extension};
+use crate::comm::MessageFrom;
+use crate::recstore::{Store64, Extension};
 
 #[derive(Debug)]
 pub enum TaskType {

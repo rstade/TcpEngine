@@ -12,7 +12,7 @@ use std::convert::TryFrom;
 use e2d2::headers::TcpHeader;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum TcpFlags {
+pub enum TcpFlags {
     Syn,
     SynAck,
     Ack,
@@ -23,7 +23,7 @@ pub(crate) enum TcpFlags {
 }
 
 impl TcpFlags {
-    pub(crate) fn from_tcp_header(tcp: &TcpHeader) -> Self {
+    pub fn from_tcp_header(tcp: &TcpHeader) -> Self {
         match (tcp.syn_flag(), tcp.ack_flag(), tcp.fin_flag(), tcp.rst_flag()) {
             (true, false, false, false) => TcpFlags::Syn,
             (true, true, false, false) => TcpFlags::SynAck,

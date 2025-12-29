@@ -19,13 +19,13 @@ extern crate serde_json;
 extern crate ipnet;
 extern crate core;
 extern crate rand;
+pub extern crate netfcts;
 
 pub mod nftraffic;
 pub mod nftcpproxy;
 pub mod run_test;
 mod tcpmanager;
 pub mod proxymanager;
-pub mod netfcts;
 pub mod runtime_install;
 pub mod proxy_helper;
 pub mod profiling;
