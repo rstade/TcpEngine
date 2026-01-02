@@ -86,7 +86,7 @@ pub fn setup_tcp_proxy<F1, F2>(
 
     // set up the generator producing timer tick packets with our private EtherType
     let (producer_timerticks, consumer_timerticks) = new_mpsc_queue_pair();
-    let tick_generator = tasks::TickGenerator::new(producer_timerticks, &me.l234, system_data.tsc_frequency / 100); // 10 ms
+    let tick_generator = tasks::TickGenerator::new(producer_timerticks, system_data.tsc_frequency / 100); // 10 ms
     assert!(wheel.resolution() >= tick_generator.tick_length());
     let wheel_tick_reduction_factor = wheel.resolution() / tick_generator.tick_length();
     let mut ticks = 0;

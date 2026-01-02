@@ -1,7 +1,7 @@
 use e2d2::interface::{Pdu, HeaderStack};
 use tcp_lib::netfcts::comm::{MessageFrom, PipelineId};
 use tcp_lib::netfcts::conrecord::ConRecord;
-use tcp_lib::{Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg, install_pipelines_for_all_cores, configure_interfaces, get_scrubber_nfg};
+use tcp_lib::{Connection, EngineMode, get_tcp_generator_nfg, get_delayed_tcp_proxy_nfg, initialize_engine, get_simple_tcp_proxy_nfg, install_pipelines_for_all_cores, configure_interfaces, };
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -55,10 +55,6 @@ pub fn main() {
         EngineMode::SimpleProxy => {
             install_pipelines_for_all_cores(&mut runtime, run_configuration_cloned, get_simple_tcp_proxy_nfg(None))
                 .expect("cannot install pipelines for SimpleProxy");
-        }
-        EngineMode::Scrubber => {
-            install_pipelines_for_all_cores(&mut runtime, run_configuration_cloned, get_scrubber_nfg())
-                .expect("cannot install pipelines for Scrubber");
         }
     };
 
@@ -280,7 +276,6 @@ pub fn main() {
             EngineMode::TrafficGenerator => "TrafficGenerator",
             EngineMode::DelayedProxy => "DelayedProxy",
             EngineMode::SimpleProxy => "SimpleProxy",
-            EngineMode::Scrubber => "Scrubber",
         };
         evaluate_records(
             &mut con_records_c,

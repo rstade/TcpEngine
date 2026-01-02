@@ -253,7 +253,7 @@ pub fn setup_generator<FPL>(
 
     // set up the generator producing timer tick packets with our private EtherType
     let (producer_timerticks, consumer_timerticks) = new_mpsc_queue_pair();
-    let tick_generator = TickGenerator::new(producer_timerticks, &me, frequency / 100); // 10 ms
+    let tick_generator = TickGenerator::new(producer_timerticks, frequency / 100); // 10 ms
     assert!(wheel_c.resolution() >= tick_generator.tick_length());
     let wheel_tick_reduction_factor = wheel_c.resolution() / tick_generator.tick_length();
     let mut ticks = 0;

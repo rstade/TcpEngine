@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::tcp_common::L234Data;
 use log::{warn, error, info};
 use std::sync::mpsc::Sender;
+use macaddr::MacAddr6;
 use crate::comm::MessageFrom;
 use crate::recstore::{Store64, Extension};
 
@@ -198,14 +199,15 @@ pub struct TickGenerator {
 impl<'a> TickGenerator {
     pub fn new(
         producer: MpscProducer,
-        hd_src_data: &L234Data,
+        // hd_src_data: &L234Data,
         tick_length: u64, // in cycles
     ) -> TickGenerator {
         let mut mac = MacHeader::new();
-        mac.src = hd_src_data.mac.clone();
+        // mac.src = hd_src_data.mac.clone();
+        mac.src = MacAddr6::nil(); // has no relevance anyway, as frame is finally dropped
         mac.set_etype(PRIVATE_ETYPE_TIMER); // mark this through an unused ethertype as an internal frame, will be re-written later in the pipeline
         let mut ip = IpHeader::new();
-        ip.set_src(hd_src_data.ip);
+        ip.set_src(0u32);
         ip.set_ttl(128);
         ip.set_version(4);
         ip.set_protocol(6); //tcp
@@ -214,7 +216,7 @@ impl<'a> TickGenerator {
         ip.set_flags(0x2); // DF=1, MF=0 flag: don't fragment
         let mut tcp = TcpHeader::new();
         tcp.set_syn_flag();
-        tcp.set_src_port(hd_src_data.port);
+        tcp.set_src_port(0u16);
         tcp.set_data_offset(5);
         let mut packet_prototype = Pdu::new_pdu().unwrap();
         packet_prototype.push_header(&mac);

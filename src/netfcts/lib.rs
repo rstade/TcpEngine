@@ -468,10 +468,11 @@ where
                                 s.send(SchedulerCommand::SetTaskStateAll(false)).unwrap();
                             }
 
-                            print_hard_statistics(1u16);
+
 
                             for port in context.ports.values() {
                                 println!("Port {}:{}", port.port_type(), port.port_id());
+                                print_hard_statistics(port.port_id());
                                 port.print_soft_statistics();
                             }
                             info!("terminating RunTime ...");

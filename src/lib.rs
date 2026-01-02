@@ -31,7 +31,6 @@ pub mod proxy_helper;
 pub mod profiling;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-pub mod nfscrubber;
 
 use std::arch::x86_64::_rdtsc;
 use netfcts::tcp_common::{CData, L234Data, ReleaseCause, TcpState, TcpStatistics};
@@ -66,7 +65,6 @@ use netfcts::tcp_common::tcp_payload_size;
 use nftraffic::setup_generator;
 
 pub use runtime_install::install_pipelines_for_all_cores;
-use crate::nfscrubber::setup_scrubber;
 use crate::nftcpproxy::setup_tcp_proxy;
 use crate::proxy_helper::{DelayedMode, PduAllocator};
 
@@ -124,7 +122,6 @@ pub enum EngineMode {
     SimpleProxy,
     DelayedProxy,
     TrafficGenerator,
-    Scrubber,
 }
 
 #[derive(Deserialize, Clone)]
@@ -544,17 +541,6 @@ pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl 
     }
 }
 
-pub fn get_scrubber_nfg() -> impl FnNetworkFunctionGraph {
-    move |core: i32,
-          pci: Option<PciQueueType>,
-          kni: Option<KniQueueType>,
-          s: &mut StandaloneScheduler,
-          config: RunConfiguration<Configuration, Store64<Extension>>| {
-        if pci.is_some() && kni.is_some() {
-            setup_scrubber(core, pci.unwrap(), kni.unwrap(), s, config,  process_payload_c_s.clone(),);
-        }
-    }
-}
 
 
 /// return the closure which creates the network function graph for the tcp proxy w/o delayed binding

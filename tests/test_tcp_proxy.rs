@@ -303,7 +303,6 @@ fn tcp_proxy() {
             EngineMode::TrafficGenerator => "TrafficGenerator",
             EngineMode::DelayedProxy => "DelayedProxy",
             EngineMode::SimpleProxy => "SimpleProxy",
-            EngineMode::Scrubber => "Scrubber",
         };
         let filename = generate_c_records_filename(engine_name);
         let file = match File::create(&filename) {
