@@ -26,7 +26,7 @@ pub mod nftcpproxy;
 pub mod run_test;
 mod tcpmanager;
 pub mod proxymanager;
-pub mod runtime_install;
+pub mod runtime;
 pub mod proxy_helper;
 pub mod profiling;
 #[cfg(any(test, feature = "test-support"))]
@@ -57,6 +57,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use bincode::serialize_into;
 use e2d2::queues::new_mpsc_queue_pair;
 use ipnet::Ipv4Net;
+use netfcts::comm::{MessageFrom, MessageTo};
 use rand::Rng;
 use netfcts::recstore::{Extension, Store64};
 use netfcts::system::{get_mac_from_ifname};
@@ -64,9 +65,11 @@ use netfcts::tcp_common::tcp_payload_size;
 // use nfdelayedproxy::setup_delayed_proxy; // removed: no such function, use setup_tcp_proxy below
 use nftraffic::setup_generator;
 
-pub use runtime_install::install_pipelines_for_all_cores;
+pub use runtime::install_pipelines_for_all_cores;
 use crate::nftcpproxy::setup_tcp_proxy;
 use crate::proxy_helper::{DelayedMode, PduAllocator};
+pub type RunConfigType = RunConfiguration<Configuration, MessageFrom<Store64<Extension>>, MessageFrom<Store64<Extension>>>;
+pub type RunTimeType = RunTime<Configuration, MessageFrom<Store64<Extension>>, MessageTo<Store64<Extension>>, MessageFrom<Store64<Extension>>>;
 
 // Replacement for former `trait alias` of a function-like constraint
 pub trait FnPayload:
@@ -85,7 +88,7 @@ pub trait FnNetworkFunctionGraph:
         Option<PciQueueType>,
         Option<KniQueueType>,
         &mut StandaloneScheduler,
-        RunConfiguration<Configuration, Store64<Extension>>,
+        RunConfigType,
     ) -> ()
     + Send
     + Sync
@@ -100,7 +103,7 @@ impl<T> FnNetworkFunctionGraph for T where
             Option<PciQueueType>,
             Option<KniQueueType>,
             &mut StandaloneScheduler,
-            RunConfiguration<Configuration, Store64<Extension>>,
+        RunConfigType,
         ) -> ()
         + Send
         + Sync
@@ -344,7 +347,7 @@ pub fn setup_pipelines<NFG>(
     core: i32,
     pmd_ports: HashMap<String, Arc<PmdPort>>,
     sched: &mut StandaloneScheduler,
-    run_configuration: RunConfiguration<Configuration, Store64<Extension>>,
+    run_configuration: RunConfigType,
     nfg: &NFG,
 ) where
     NFG: FnNetworkFunctionGraph,
@@ -456,7 +459,7 @@ pub fn get_tcp_generator_nfg() -> impl FnNetworkFunctionGraph {
           pci: Option<PciQueueType>,
           kni: Option<KniQueueType>,
           s: &mut StandaloneScheduler,
-          config: RunConfiguration<Configuration, Store64<Extension>>| {
+          config: RunConfigType| {
         if pci.is_some() && kni.is_some() {
             setup_generator(core, pci.unwrap(), kni.unwrap(), s, config, set_payload);
         }
@@ -519,7 +522,7 @@ pub fn get_delayed_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl 
           pci: Option<PciQueueType>,
           kni: Option<KniQueueType>,
           s: &mut StandaloneScheduler,
-          config: RunConfiguration<Configuration, Store64<Extension>>| {
+          config: RunConfigType| {
         if let (Some(pci), Some(kni)) = (pci, kni) {
             let (producer, consumer) = new_mpsc_queue_pair();
             let mode = DelayedMode {
@@ -551,7 +554,7 @@ pub fn get_simple_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl F
           pci: Option<PciQueueType>,
           kni: Option<KniQueueType>,
           s: &mut StandaloneScheduler,
-          config: RunConfiguration<Configuration, Store64<Extension>>| {
+          config: RunConfigType| {
         if pci.is_some() && kni.is_some() {
             setup_tcp_proxy(
                 None,
@@ -567,14 +570,14 @@ pub fn get_simple_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl F
     }
 }
 
-pub fn initialize_engine(indirectly: bool) -> (RunTime<Configuration, Store64<Extension>>, EngineMode, Arc<AtomicBool>) {
+pub fn initialize_engine(indirectly: bool) -> (RunTimeType, EngineMode, Arc<AtomicBool>) {
     env_logger::init();
     info!("Reading configuration ..");
 
     // cannot directly read toml file from command line, as cargo test owns it. Thus we take a detour and read it from a file.
     const INDIRECTION_FILE: &str = "./tests/toml_file.txt";
 
-    let mut runtime: RunTime<Configuration, Store64<Extension>> = if indirectly {
+    let mut runtime: RunTimeType = if indirectly {
         match RunTime::init_indirectly(INDIRECTION_FILE) {
             Ok(run_time) => run_time,
             Err(err) => panic!("failed to initialize RunTime {}", err),

@@ -255,7 +255,6 @@ impl CollectedData {
 }
 
 /// Collect replies from the main reply channel into convenient structures.
-/// This unifies the duplicated receive loops in bin.rs and run_test.rs.
 pub fn collect_from_main_reply(reply_mrx: &Receiver<MessageTo<Store64<Extension>>>, timeout_ms: u64, tsc_frequency: u64) -> CollectedData {
     let mut data = CollectedData::new();
 

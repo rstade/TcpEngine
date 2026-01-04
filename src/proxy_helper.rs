@@ -1,4 +1,4 @@
-use crate::{Timeouts};
+use crate::{RunConfigType, Timeouts};
 use crate::netfcts::timer_wheel::TimerWheel;
 use crate::netfcts::tcp_common::L234Data;
 use crate::netfcts::tcp_common::{TcpState, TcpStatistics, ReleaseCause, TcpCounter};
@@ -311,9 +311,9 @@ pub struct Me {
 /// the receiver for messages directed to the pipeline.
 pub fn setup_reverse_channel(
     pipeline_id: &PipelineId,
-    run_configuration: &RunConfiguration<Configuration, Store64<Extension>>,
+    run_configuration: &RunConfigType,
 ) -> Receiver<MessageTo<ProxyRecStore>> {
-    let tx = run_configuration.remote_sender.clone();
+    let tx = run_configuration.main_sender_fm.clone();
     debug!("{} setting up reverse channel", pipeline_id);
     let (remote_tx, rx) = channel::<MessageTo<ProxyRecStore>>();
     tx.send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
@@ -380,7 +380,7 @@ pub fn make_context(
     pci: &CacheAligned<PortQueueTxBuffered>,
     kni: &CacheAligned<PortQueue>,
     _sched: &mut StandaloneScheduler,
-    run_configuration: &RunConfiguration<Configuration, Store64<Extension>>,
+    run_configuration: &RunConfigType,
 ) -> ProxyContext {
     let l4flow_for_this_core = run_configuration
         .flowdirector_map
@@ -406,7 +406,7 @@ pub fn make_context(
     let detailed_records = engine_config.detailed_records.unwrap_or(false);
     let cm: ConnectionManager = ConnectionManager::new(pci.port_queue.clone(), *l4flow_for_this_core, detailed_records);
 
-    let mut timeouts = Timeouts::default_or_some(&engine_config.timeouts);
+    let mut timeouts = Timeouts::default_or_some(engine_config.timeouts.as_ref());
     let wheel = make_timer_wheel_and_fix_timeouts(&mut timeouts, system_data.tsc_frequency);
 
     // Reverse channel

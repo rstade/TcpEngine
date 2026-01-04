@@ -48,7 +48,7 @@ use e2d2::native::zcsi::rte_ethdev_api::{
 };
 use serde::de::DeserializeOwned;
 use self::tcp_common::L234Data;
-use crate::comm::{MessageFrom, MessageTo};
+use crate::comm::{MessageFrom, MessageTo, RTMessage};
 use crate::comm::PipelineId;
 use crate::io::print_hard_statistics;
 use crate::recstore::SimpleStore;
@@ -61,16 +61,29 @@ struct Config<T: Sized + Clone> {
     engine: T,
 }
 
-#[derive(Clone)]
-pub struct RunConfiguration<T: Sized + Clone, TStore: SimpleStore + Clone> {
+pub struct RunConfiguration<T: Sized + Clone, FM: RTMessage, FW:RTMessage> {
     pub system_data: SystemData,
     pub netbricks_configuration: NetbricksConfiguration,
     pub engine_configuration: T,
     pub flowdirector_map: HashMap<u16, Arc<FlowDirector>>,
-    pub remote_sender: Sender<MessageFrom<TStore>>,
-    pub local_sender: Sender<MessageTo<TStore>>,
+    pub main_sender_fm: Sender<FM>,
+    pub worker_sender_fw: Sender<FW>,
     /// do we run in interactive mode?
     pub b_interactive: bool,
+}
+
+impl<T: Sized + Clone, FM: RTMessage, FW: RTMessage> Clone for RunConfiguration<T, FM, FW> {
+    fn clone(&self) -> Self {
+        Self {
+            system_data: self.system_data.clone(),
+            netbricks_configuration: self.netbricks_configuration.clone(),
+            engine_configuration: self.engine_configuration.clone(),
+            flowdirector_map: self.flowdirector_map.clone(),
+            main_sender_fm: self.main_sender_fm.clone(),
+            worker_sender_fw: self.worker_sender_fw.clone(),
+            b_interactive: self.b_interactive,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -79,23 +92,26 @@ pub enum RuntimeExit {
     Err(String),
 }
 
-pub struct RunTime<T: Sized + Clone + Send, TStore: SimpleStore + Clone> {
-    pub run_configuration: RunConfiguration<T, TStore>,
-    context: Option<NetBricksContext>,
+
+pub struct RunTime<T: Sized + Clone + Send, FM: RTMessage, TM: RTMessage, FW:RTMessage> {
+    pub run_configuration: RunConfiguration<T, FM, FW>,
+    pub context: Option<NetBricksContext>,
     /// receiver in run_time thread for messages from all the pipelines running, and usually from main thread
     /// will be moved into the run_time thread
-    local_receiver: Option<Receiver<MessageFrom<TStore>>>,
+    pub rt_receiver_fm: Option<Receiver<FM>>,
     /// a single receiver instance for messages sent by run_time thread and pipelines, usually retrieved by main thread
     /// see also get_main_channel()
-    remote_receiver: Option<Receiver<MessageTo<TStore>>>,
+    main_receiver_tm: Option<Receiver<TM>>,
+    pub rt_sender_tm: Sender<TM>,
+    pub rt_receiver_fw: Receiver<FW>,
     toml_file: String,
     /// exit notification receiver: main/test can take this to learn when the runtime thread exits
-    exit_receiver: Option<Receiver<RuntimeExit>>,
+    pub exit_receiver: Option<Receiver<RuntimeExit>>,
     /// Join handle of the runtime thread for optional joining
-    handle: Option<std::thread::JoinHandle<()>>,
+    pub handle: Option<std::thread::JoinHandle<()>>,
 }
 
-impl<T: Sized + Clone + Send, TStore: 'static + SimpleStore + Clone> RunTime<T, TStore>
+impl<T: Sized + Clone + Send, FM: RTMessage, TM: RTMessage, FW:RTMessage> RunTime<T, FM, TM, FW>
 where
     T: DeserializeOwned,
 {
@@ -227,7 +243,7 @@ where
         }
     }
 
-    pub fn init_with_toml_file(args: &Vec<String>) -> E2d2Result<RunTime<T, TStore>> {
+    pub fn init_with_toml_file(args: &Vec<String>) -> E2d2Result<RunTime<T, FM, TM, FW>> {
         let opts = basic_opts();
 
         let matches = match opts.parse(&args[..]) {
@@ -245,17 +261,21 @@ where
 
         let netbricks_configuration = read_matches(&matches, &opts);
 
-        let config: Config<T> = RunTime::<T, TStore>::read_config(&toml_file.trim())?;
+        let config: Config<T> = RunTime::<T, FM, TM, FW>::read_config(&toml_file.trim())?;
         let engine_configuration = config.engine;
 
-        let (remote_sender, local_receiver) = channel::<MessageFrom<TStore>>();
-        let (local_sender, remote_receiver) = channel::<MessageTo<TStore>>();
+        // the channels from and to main thread
+        let (main_sender_fm, rt_receiver_fm) = channel::<FM>();
+        let (rt_sender_tm, main_receiver_tm) = channel::<TM>();
+
+        // the MPSC channel from worker threads, the return channel is created by the worker threads
+        let (worker_sender_fw, rt_receiver_fw) = channel::<FW>();
 
         // this calls also DPDK EAL
         info!("initializing DPDK ...");
         match initialize_system(&netbricks_configuration)
             .map_err(|e| e.into())
-            .and_then(|ctxt| RunTime::<T, TStore>::check_system(ctxt))
+            .and_then(|ctxt| RunTime::<T, FM, TM, FW>::check_system(ctxt))
         {
             Ok(context) => Ok(RunTime {
                 run_configuration: RunConfiguration {
@@ -263,13 +283,15 @@ where
                     netbricks_configuration,
                     engine_configuration,
                     flowdirector_map: HashMap::new(),
-                    remote_sender,
-                    local_sender,
+                    main_sender_fm,
+                    worker_sender_fw,
                     b_interactive: matches.opt_present("interactive"),
                 },
                 context: Some(context),
-                local_receiver: Some(local_receiver),
-                remote_receiver: Some(remote_receiver),
+                rt_receiver_fm: Some(rt_receiver_fm),
+                main_receiver_tm: Some(main_receiver_tm),
+                rt_sender_tm,
+                rt_receiver_fw,
                 toml_file: toml_file.clone(),
                 exit_receiver: None,
                 handle: None,
@@ -282,7 +304,7 @@ where
     }
 
     /// initializes with a toml-file whose name is in args[1]
-    pub fn init() -> E2d2Result<RunTime<T, TStore>> {
+    pub fn init() -> E2d2Result<RunTime<T, FM, TM, FW>> {
         Self::set_rte_log_level();
         Self::check_for_root_user();
         // read config file name from command line
@@ -300,7 +322,7 @@ where
     }
 
     /// initializes with a toml-file whose name is read from an indirection file
-    pub fn init_indirectly(indirection_pathname: &str) -> E2d2Result<RunTime<T, TStore>> {
+    pub fn init_indirectly(indirection_pathname: &str) -> E2d2Result<RunTime<T, FM, TM, FW>> {
         Self::set_rte_log_level();
         Self::check_for_root_user();
         let mut f = File::open(indirection_pathname).expect("file not found");
@@ -319,11 +341,11 @@ where
     }
 
     /// this returns the communication channel to the run_time thread, only the first call returns the channel
-    pub fn get_main_channel(&mut self) -> Option<(Sender<MessageFrom<TStore>>, Receiver<MessageTo<TStore>>)> {
-        if self.remote_receiver.is_some() {
+    pub fn get_main_channel(&mut self) -> Option<(Sender<FM>, Receiver<TM>)> {
+        if self.main_receiver_tm.is_some() {
             Some((
-                self.run_configuration.remote_sender.clone(),
-                self.remote_receiver.take().unwrap(),
+                self.run_configuration.main_sender_fm.clone(),
+                self.main_receiver_tm.take().unwrap(),
             ))
         } else {
             None
@@ -371,7 +393,7 @@ where
                 let opt_kni = self.context.as_ref().unwrap().ports.get(*port.kni_name().as_ref().unwrap());
                 if opt_kni.is_some() {
                     let kni = opt_kni.unwrap();
-                    let flow_dir = RunTime::<T, TStore>::initialize_flowdirector(port, kni);
+                    let flow_dir = RunTime::<T, FM, TM, FW>::initialize_flowdirector(port, kni);
                     if flow_dir.is_some() {
                         self.run_configuration
                             .flowdirector_map
@@ -414,191 +436,6 @@ where
         Ok(())
     }
 
-    /// start spawns_run_time_thread and consumes self.context and self.local_receiver (thread needs static lifetime)
-    pub fn start(&mut self) {
-        let mut context = self.context.take().unwrap();
-        let mrx = self.local_receiver.take().unwrap();
-        let reply_to_main = self.run_configuration.local_sender.clone();
-
-        // create exit notification channel and keep receiver for main
-        let (exit_tx, exit_rx) = channel::<RuntimeExit>();
-        self.exit_receiver = Some(exit_rx);
-
-        let handle = thread::spawn(move || {
-            use std::panic::{catch_unwind, AssertUnwindSafe};
-            let mut senders = HashMap::new();
-            let mut tasks: Vec<Vec<(PipelineId, Uuid)>> = Vec::with_capacity(TaskType::NoTaskTypes as usize);
-            for _t in 0..TaskType::NoTaskTypes as usize {
-                tasks.push(Vec::<(PipelineId, Uuid)>::with_capacity(16));
-            }
-
-            // start execution of pipelines, but does not change task state of pipelines (e.g. sets them into ready state)
-            // the latter happens with message StartEngine (see below)
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                context.execute_schedulers();
-                setup_kernel_interfaces(&context);
-
-                // communicate with schedulers and main thread:
-                loop {
-                    match mrx.recv_timeout(Duration::from_millis(10)) {
-                        Ok(MessageFrom::StartEngine) => {
-                            debug!("starting generator tasks");
-                            for s in &context.scheduler_channels {
-                                s.1.send(SchedulerCommand::SetTaskStateAll(true)).unwrap();
-                            }
-                        }
-                        Ok(MessageFrom::Channel(pipeline_id, sender)) => {
-                            debug!("got sender from {}", pipeline_id);
-                            senders.insert(pipeline_id, sender);
-                        }
-                        Ok(MessageFrom::PrintPerformance(indices)) => {
-                            for i in &indices {
-                                context
-                                    .scheduler_channels
-                                    .get(i)
-                                    .unwrap()
-                                    .send(SchedulerCommand::GetPerformance)
-                                    .unwrap();
-                                sleep(Duration::from_micros(200));
-                            }
-                        }
-                        Ok(MessageFrom::Exit) => {
-                            // stop all tasks on all schedulers
-                            for s in context.scheduler_channels.values() {
-                                s.send(SchedulerCommand::SetTaskStateAll(false)).unwrap();
-                            }
-
-
-
-                            for port in context.ports.values() {
-                                println!("Port {}:{}", port.port_type(), port.port_id());
-                                print_hard_statistics(port.port_id());
-                                port.print_soft_statistics();
-                            }
-                            info!("terminating RunTime ...");
-                            // drop all per-pipeline senders so the reply channel can close cleanly
-                            senders.clear();
-                            // Some error scenarios may already have torn down channels; protect stop() against panics
-                            if let Err(_p) = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                                context.stop();
-                            })) {
-                                error!("context.stop() panicked during graceful exit; continuing shutdown");
-                            }
-                            break;
-                        }
-                        Ok(MessageFrom::Task(pipeline_id, uuid, task_type)) => {
-                            debug!("{}: task uuid= {}, type={:?}", pipeline_id, uuid, task_type);
-                            tasks[task_type as usize].push((pipeline_id, uuid));
-                        }
-                        Ok(MessageFrom::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter)) => {
-                            debug!("{}: received Counter", pipeline_id);
-                            reply_to_main
-                                .send(MessageTo::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter))
-                                .unwrap();
-                        }
-                        Ok(MessageFrom::FetchCounter) => {
-                            for (_p, s) in &senders {
-                                s.send(MessageTo::FetchCounter).unwrap();
-                            }
-                        }
-                        Ok(MessageFrom::CRecords(pipeline_id, c_records_client, c_records_server)) => {
-                            reply_to_main
-                                .send(MessageTo::CRecords(pipeline_id, c_records_client, c_records_server))
-                                .unwrap();
-                        }
-                        Ok(MessageFrom::FetchCRecords) => {
-                            for (_p, s) in &senders {
-                                s.send(MessageTo::FetchCRecords).unwrap();
-                            }
-                        }
-                        Ok(MessageFrom::TimeStamps(p, t0, t1)) => {
-                            reply_to_main.send(MessageTo::TimeStamps(p, t0, t1)).unwrap();
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(e) => {
-                            error!("error receiving from MessageFrom channel: {}", e);
-                            // best-effort stop of all tasks and schedulers before exiting the runtime thread
-                            for s in context.scheduler_channels.values() {
-                                let _ = s.send(SchedulerCommand::SetTaskStateAll(false));
-                            }
-                            // drop all per-pipeline senders so the reply channel can close cleanly
-                            senders.clear();
-                            // Protect against panics if context is already partially torn down
-                            if let Err(_p) = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                                context.stop();
-                            })) {
-                                error!("context.stop() panicked after MessageFrom error; continuing shutdown");
-                            }
-                            break;
-                        }
-                    };
-                    match context
-                        .reply_receiver
-                        .as_ref()
-                        .unwrap()
-                        .recv_timeout(Duration::from_millis(10))
-                    {
-                        Ok(SchedulerReply::PerformanceData(core, map)) => {
-                            let mut pairs = map.into_iter().collect::<Vec<_>>();
-                            pairs.sort_by(|a, b| a.1.0.cmp(&b.1.0));
-                            for (_, d) in pairs {
-                                println!(
-                                    "{:2}: {:20} {:>15} cycles, count= {:12}, queue length= {}",
-                                    core,
-                                    d.0,
-                                    d.1.separated_string(),
-                                    d.2.separated_string(),
-                                    d.3
-                                )
-                            }
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(e) => {
-                            error!("error receiving from SchedulerReply channel: {}", e);
-                            // best-effort stop of all tasks and schedulers before exiting the runtime thread
-                            for s in context.scheduler_channels.values() {
-                                let _ = s.send(SchedulerCommand::SetTaskStateAll(false));
-                            }
-                            // drop all per-pipeline senders so the reply channel can close cleanly
-                            senders.clear();
-                            // Protect against panics if context is already partially torn down
-                            if let Err(_p) = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                                context.stop();
-                            })) {
-                                error!("context.stop() panicked after SchedulerReply error; continuing shutdown");
-                            }
-                            break;
-                        }
-                    }
-                }
-                info!("exiting mrx recv thread of the RunTime ...");
-            }));
-
-            match result {
-                Ok(_) => {
-                    info!("RunTime: signaling RuntimeExit::Ok to main (exit_tx)");
-                    if let Err(e) = exit_tx.send(RuntimeExit::Ok) {
-                        error!("RunTime: failed to send RuntimeExit::Ok to main: {}", e);
-                    }
-                }
-                Err(payload) => {
-                    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                        s.to_string()
-                    } else if let Some(s) = payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else {
-                        "panic in runtime thread (non-string payload)".to_string()
-                    };
-                    info!("RunTime: signaling RuntimeExit::Err to main (exit_tx): {}", msg);
-                    if let Err(e) = exit_tx.send(RuntimeExit::Err(msg)) {
-                        error!("RunTime: failed to send RuntimeExit::Err to main: {}", e);
-                    }
-                }
-            }
-        });
-
-        self.handle = Some(handle);
-    }
 
     /// Join the runtime thread with a bounded timeout. Returns true if the thread
     /// terminated within the timeout, false on timeout or if there is no handle.
@@ -619,6 +456,7 @@ where
         }
     }
 }
+
 
 pub fn setup_kernel_interfaces(context: &NetBricksContext) {
     // set up kni: this requires the executable KniHandleRequest to run (serving rte_kni_handle_request)

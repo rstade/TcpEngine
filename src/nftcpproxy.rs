@@ -1,4 +1,4 @@
-use crate::FnProxySelectServer;
+use crate::{FnProxySelectServer, RunConfigType};
 use crate::{FnProxyPayload, ProxyConnection};
 use e2d2::allocators::CacheAligned;
 use e2d2::interface::*;
@@ -40,7 +40,7 @@ pub fn setup_tcp_proxy<F1, F2>(
     pci: CacheAligned<PortQueueTxBuffered>,
     kni: CacheAligned<PortQueue>,
     sched: &mut StandaloneScheduler,
-    run_configuration: RunConfiguration<Configuration, Store64<Extension>>,
+    run_configuration: RunConfigType,
     f_select_server: F1,
     f_process_payload_c_s: F2,
 ) where
@@ -54,7 +54,7 @@ pub fn setup_tcp_proxy<F1, F2>(
     let servers: Vec<L234Data> = ctx.servers.clone();
     let pipeline_id = ctx.pipeline_id.clone();
     debug!("enter setup_forwarder {}", pipeline_id);
-    let tx2runtime = run_configuration.remote_sender.clone();
+    let tx2runtime = run_configuration.main_sender_fm.clone();
     let mut cm: ConnectionManager = ctx.cm;
     let timeouts = ctx.timeouts;
     let mut wheel = ctx.wheel;
@@ -617,10 +617,10 @@ pub fn setup_tcp_proxy<F1, F2>(
     .send(pci.clone());
 
     let uuid_pipe2kni = tasks::install_task(sched, "Pipe2Kni", pipe2kni);
-    tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::Pipe2Kni))
+    tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::KniSend))
         .unwrap();
 
     let uuid_pipe2pic = tasks::install_task(sched, "Pipe2Pci", pipe2pci);
-    tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pic, TaskType::Pipe2Pci))
+    tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pic, TaskType::EgressSend))
         .unwrap();
 }

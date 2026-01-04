@@ -24,6 +24,7 @@ use tcp_lib::netfcts::comm::{MessageFrom, MessageTo};
 use tcp_lib::netfcts::conrecord::HasTcpState;
 use tcp_lib::netfcts::tcp_common::L234Data;
 use tcp_lib::netfcts::tcp_common::ReleaseCause;
+use tcp_lib::runtime::RunTimeThread;
 
 #[test]
 fn delayed_binding_proxy() {
@@ -95,10 +96,11 @@ fn delayed_binding_proxy() {
         configuration.engine.port,
     );
 
+    let mut runtime_thread = RunTimeThread { runtime };
     // start the run_time receive thread
-    runtime.start();
+    runtime_thread.start();
 
-    let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
     mtx.send(MessageFrom::StartEngine).unwrap();
     thread::sleep(Duration::from_millis(2000 as u64));
 

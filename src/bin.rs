@@ -15,6 +15,7 @@ use tcp_lib::netfcts::recstore::{Store64, Extension};
 use std::mem::size_of;
 use std::sync::mpsc::{TryRecvError, channel};
 use e2d2::native::zcsi::mbuf_avail_count;
+use tcp_lib::runtime::RunTimeThread;
 
 const STARTUP_DELAY_MS: u64 = 1000;
 const PRINT_DELAY_MS: u64 = 200;
@@ -23,7 +24,10 @@ const REPLY_TIMEOUT_MS: u64 = 2000;
 const SHUTDOWN_POLL_MS: u64 = 100;
 const SHUTDOWN_MAX_WAIT_MS: u64 = 1000;
 pub fn main() {
+    debug!("*** main logging is in debug mode ***");
+
     let (mut runtime, mode, running) = initialize_engine(false);
+
 
     let run_configuration = runtime.run_configuration.clone();
 
@@ -60,15 +64,16 @@ pub fn main() {
 
     let cores = runtime.context().unwrap().active_cores.clone();
 
+    let mut runtime_thread = RunTimeThread { runtime };
     // start the run_time
-    runtime.start();
+    runtime_thread.start();
 
     // give threads some time to do initialization work
 
     thread::sleep(Duration::from_millis(STARTUP_DELAY_MS));
 
     // Get exit notification receiver to detect early runtime thread termination
-    let exit_rx = runtime.take_exit_receiver().expect("no exit receiver available");
+    let exit_rx = runtime_thread.runtime.take_exit_receiver().expect("no exit receiver available");
 
     // Helper to detect early runtime termination uniformly (visible to both branches below)
     fn runtime_exit_triggered(exit_rx: &std::sync::mpsc::Receiver<tcp_lib::netfcts::RuntimeExit>) -> bool {
@@ -89,7 +94,7 @@ pub fn main() {
         }
     }
 
-    let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
 
     info!("before run: available mbufs in memory pool= {:6}\n", unsafe {
         mbuf_avail_count()
@@ -301,7 +306,7 @@ pub fn main() {
     info!("Shutdown: dropped run_configuration (reply sender clone on main side released)");
     // Note: run_configuration_cloned was moved into install_pipelines_for_all_cores earlier.
     // Also drop runtime to release the local sender clone held in run_configuration
-    drop(runtime);
+    drop(runtime_thread);
     info!("Shutdown: dropped runtime (remaining local sender clone released)");
     // Wait bounded time for the runtime thread to terminate by observing the reply channel closing
     info!(

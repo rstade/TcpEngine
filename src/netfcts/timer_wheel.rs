@@ -16,7 +16,6 @@ pub fn duration_to_micros(dur: &Duration) -> u64 {
 
 */
 
-
 pub struct TimerWheel<T>
 where
     T: Clone,

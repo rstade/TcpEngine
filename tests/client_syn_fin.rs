@@ -31,6 +31,7 @@ use tcp_lib::netfcts::tcp_common::{L234Data, ReleaseCause, TcpState};
 use tcp_lib::{
     get_delayed_tcp_proxy_nfg, get_simple_tcp_proxy_nfg, initialize_engine, setup_pipelines, EngineMode, ProxyConnection,
 };
+use tcp_lib::runtime::RunTimeThread;
 
 #[test]
 fn delayed_binding_proxy() {
@@ -123,10 +124,11 @@ fn delayed_binding_proxy() {
 
     info!("proxy IP address: {}, port = {}", proxy_addr.0, proxy_addr.1);
 
+    let mut runtime_thread = RunTimeThread { runtime };
     // start the run_time receive thread
-    runtime.start();
+    runtime_thread.start();
 
-    let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
     mtx.send(MessageFrom::StartEngine).unwrap();
     thread::sleep(Duration::from_millis(2000u64));
 

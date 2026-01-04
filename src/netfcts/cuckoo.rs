@@ -261,115 +261,406 @@ impl<V: Default + Copy> CuckooSocketMap<V> {
     }
 }
 
+
+
+// **** CuckooFlowMap for FiveTupleV4 keys
+
+use e2d2::utils::FiveTupleV4;
+
+// Trait für Timestamp-Zugriff
+pub trait HasTimestamp {
+    fn last_seen(&self) -> u64;
+}
+
+
+/// Cuckoo Hashing for FiveTupleV4 with 2 Hash-Functions
+pub struct CuckooFlowMap<V> {
+    table1: Vec<Option<(FiveTupleV4, V)>>,
+    table2: Vec<Option<(FiveTupleV4, V)>>,
+    size: usize,
+    count: usize,
+    max_kicks: usize,
+}
+
+impl<V: Clone> CuckooFlowMap<V> {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            table1: vec![None; capacity],
+            table2: vec![None; capacity],
+            size: capacity,
+            count: 0,
+            max_kicks: 500,
+        }
+    }
+
+    fn hash1(&self, key: &FiveTupleV4) -> usize {
+        let mut h = 0u64;
+        h ^= key.src_ip as u64;
+        h ^= (key.dst_ip as u64) << 16;
+        h ^= (key.src_port as u64) << 32;
+        h ^= (key.dst_port as u64) << 40;
+        h ^= (key.proto as u64) << 48;
+        (h as usize) % self.size
+    }
+
+    fn hash2(&self, key: &FiveTupleV4) -> usize {
+        let mut h = 0x9e3779b97f4a7c15u64; // Golden ratio
+        h ^= key.dst_ip as u64;
+        h ^= (key.src_ip as u64) << 16;
+        h ^= (key.dst_port as u64) << 32;
+        h ^= (key.src_port as u64) << 40;
+        h ^= (key.proto as u64) << 56;
+        (h as usize) % self.size
+    }
+
+    pub fn insert(&mut self, key: FiveTupleV4, value: V) -> Result<(), (FiveTupleV4, V)> {
+        // Prüfe ob Key schon existiert
+        if self.get(&key).is_some() {
+            let idx1 = self.hash1(&key);
+            if let Some((k, _)) = &self.table1[idx1] {
+                if k == &key {
+                    self.table1[idx1] = Some((key, value));
+                    return Ok(());
+                }
+            }
+            let idx2 = self.hash2(&key);
+            if let Some((k, _)) = &self.table2[idx2] {
+                if k == &key {
+                    self.table2[idx2] = Some((key, value));
+                    return Ok(());
+                }
+            }
+        }
+
+        let mut current = (key, value);
+
+        for _ in 0..self.max_kicks {
+            // Versuche Tabelle 1
+            let idx1 = self.hash1(&current.0);
+            if self.table1[idx1].is_none() {
+                self.table1[idx1] = Some(current);
+                self.count += 1;
+                return Ok(());
+            }
+
+            // Kicke Element aus Tabelle 1
+            let kicked = self.table1[idx1].take().unwrap();
+            self.table1[idx1] = Some(current);
+            current = kicked;
+
+            // Versuche Tabelle 2
+            let idx2 = self.hash2(&current.0);
+            if self.table2[idx2].is_none() {
+                self.table2[idx2] = Some(current);
+                self.count += 1;
+                return Ok(());
+            }
+
+            // Kicke Element aus Tabelle 2
+            let kicked = self.table2[idx2].take().unwrap();
+            self.table2[idx2] = Some(current);
+            current = kicked;
+        }
+
+        // Rehashing nötig
+        Err(current)
+    }
+
+    pub fn get(&self, key: &FiveTupleV4) -> Option<&V> {
+        let idx1 = self.hash1(key);
+        if let Some((k, v)) = &self.table1[idx1] {
+            if k == key {
+                return Some(v);
+            }
+        }
+
+        let idx2 = self.hash2(key);
+        if let Some((k, v)) = &self.table2[idx2] {
+            if k == key {
+                return Some(v);
+            }
+        }
+
+        None
+    }
+
+    pub fn remove(&mut self, key: &FiveTupleV4) -> Option<V> {
+        let idx1 = self.hash1(key);
+        if let Some((k, _)) = &self.table1[idx1] {
+            if k == key {
+                self.count -= 1;
+                return self.table1[idx1].take().map(|(_, v)| v);
+            }
+        }
+
+        let idx2 = self.hash2(key);
+        if let Some((k, _)) = &self.table2[idx2] {
+            if k == key {
+                self.count -= 1;
+                return self.table2[idx2].take().map(|(_, v)| v);
+            }
+        }
+
+        None
+    }
+
+    pub fn update<F>(&mut self, key: &FiveTupleV4, f: F) -> bool
+    where
+        F: FnOnce(&mut V),
+    {
+        let idx1 = self.hash1(key);
+        if let Some((k, v)) = &mut self.table1[idx1] {
+            if k == key {
+                f(v);  // Direkt mutieren
+                return true;
+            }
+        }
+
+        let idx2 = self.hash2(key);
+        if let Some((k, v)) = &mut self.table2[idx2] {
+            if k == key {
+                f(v);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn update_or_insert<F>(&mut self, key: FiveTupleV4, default: V, f: F) -> Result<(), (FiveTupleV4, V)>
+    where
+        F: FnOnce(&mut V),
+    {
+        // Versuche zu updaten
+        let idx1 = self.hash1(&key);
+        if let Some((k, v)) = &mut self.table1[idx1] {
+            if k == &key {
+                f(v);
+                return Ok(());
+            }
+        }
+
+        let idx2 = self.hash2(&key);
+        if let Some((k, v)) = &mut self.table2[idx2] {
+            if k == &key {
+                f(v);
+                return Ok(());
+            }
+        }
+
+        // Key existiert nicht → Insert
+        self.insert(key, default)
+    }
+
+    pub fn update_or_insert_with<F, D>(&mut self, key: FiveTupleV4, default_fn: D, update_fn: F) -> Result<(), (FiveTupleV4, V)>
+    where
+        F: FnOnce(&mut V),
+        D: FnOnce() -> V,
+    {
+        // Versuche zu updaten
+        let idx1 = self.hash1(&key);
+        if let Some((k, v)) = &mut self.table1[idx1] {
+            if k == &key {
+                update_fn(v);
+                return Ok(());
+            }
+        }
+
+        let idx2 = self.hash2(&key);
+        if let Some((k, v)) = &mut self.table2[idx2] {
+            if k == &key {
+                update_fn(v);
+                return Ok(());
+            }
+        }
+
+        // Key existiert nicht → Insert
+        self.insert(key, default_fn())
+    }
+
+    // Verwendung:
+/*
+    flow_map.update_or_insert_with(
+        flow,
+        || FlowState { packets: 1, bytes: pkt_len, last_seen: now },
+        |s| { s.packets += 1; s.bytes += pkt_len; s.last_seen = now; }
+    )?;
+*/
+
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.size * 2
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_insert_and_get() {
-        let mut map = CuckooSocketMap::<u16>::new(16);
+    #[cfg(test)]
+    mod tests {
+        use super::*;
 
-        map.insert((192_168_1_1, 8080), 1234);
-        map.insert((192_168_1_2, 8081), 1235);
+        #[test]
+        fn test_insert_and_get() {
+            let mut map = CuckooSocketMap::<u16>::new(16);
 
-        assert_eq!(map.get(&(192_168_1_1, 8080)), Some(1234));
-        assert_eq!(map.get(&(192_168_1_2, 8081)), Some(1235));
-        assert_eq!(map.get(&(192_168_1_3, 8082)), None);
-        assert_eq!(map.len(), 2);
+            map.insert((192_168_1_1, 8080), 1234);
+            map.insert((192_168_1_2, 8081), 1235);
+
+            assert_eq!(map.get(&(192_168_1_1, 8080)), Some(1234));
+            assert_eq!(map.get(&(192_168_1_2, 8081)), Some(1235));
+            assert_eq!(map.get(&(192_168_1_3, 8082)), None);
+            assert_eq!(map.len(), 2);
+        }
+
+        #[test]
+        fn test_update() {
+            let mut map = CuckooSocketMap::<u16>::new(16);
+
+            assert_eq!(map.insert((192_168_1_1, 8080), 1234), None);
+            assert_eq!(map.insert((192_168_1_1, 8080), 5678), Some(1234));
+            assert_eq!(map.get(&(192_168_1_1, 8080)), Some(5678));
+            assert_eq!(map.len(), 1);
+        }
+
+        #[test]
+        fn test_remove() {
+            let mut map = CuckooSocketMap::<u16>::new(16);
+
+            map.insert((192_168_1_1, 8080), 1234);
+            assert_eq!(map.remove(&(192_168_1_1, 8080)), Some(1234));
+            assert_eq!(map.get(&(192_168_1_1, 8080)), None);
+            assert_eq!(map.remove(&(192_168_1_1, 8080)), None);
+            assert_eq!(map.len(), 0);
+        }
+
+        #[test]
+        fn test_many_insertions() {
+            let mut map = CuckooSocketMap::<u16>::new(64);
+
+            // Insert 1000 entries
+            for i in 0..1000u16 {
+                let ip = 192_168_0_0 + i as u32;
+                let port = 8000 + i;
+                map.insert((ip, port), i);
+            }
+
+            assert_eq!(map.len(), 1000);
+
+            // Verify all entries
+            for i in 0..1000u16 {
+                let ip = 192_168_0_0 + i as u32;
+                let port = 8000 + i;
+                assert_eq!(map.get(&(ip, port)), Some(i));
+            }
+
+            println!("Load factor after 1000 insertions: {:.2}", map.load_factor());
+        }
+
+        #[test]
+        fn test_resize() {
+            let mut map = CuckooSocketMap::<u16>::new(4);
+
+            // Force multiple resizes
+            for i in 0..100u16 {
+                map.insert((i as u32, i), i);
+            }
+
+            assert_eq!(map.len(), 100);
+
+            // Verify all entries still accessible
+            for i in 0..100u16 {
+                assert_eq!(map.get(&(i as u32, i)), Some(i));
+            }
+        }
+
+        #[test]
+        fn test_clear() {
+            let mut map = CuckooSocketMap::<u16>::new(16);
+
+            for i in 0..10u16 {
+                map.insert((i as u32, i), i);
+            }
+
+            assert_eq!(map.len(), 10);
+            map.clear();
+            assert_eq!(map.len(), 0);
+            assert!(map.is_empty());
+            assert_eq!(map.get(&(5, 5)), None);
+        }
+
+        #[test]
+        fn test_collision_handling() {
+            let mut map = CuckooSocketMap::<u16>::new(8);
+
+            // Insert many entries that may cause collisions
+            for i in 0..50u16 {
+                let ip = 192_168_1_1;
+                let port = 8000 + i;
+                map.insert((ip, port), i);
+            }
+
+            // Verify all entries
+            for i in 0..50u16 {
+                let ip = 192_168_1_1;
+                let port = 8000 + i;
+                assert_eq!(map.get(&(ip, port)), Some(i), "Failed at index {}", i);
+            }
+        }
     }
 
     #[test]
-    fn test_update() {
-        let mut map = CuckooSocketMap::<u16>::new(16);
+    fn test_insert_and_get() {
+        #[derive(Debug, Clone)]
+        pub struct FlowState {
+            pub packets: u64,
+            pub bytes: u64,
+            pub last_seen: u64,  // Timestamp in Millis
+        }
 
-        assert_eq!(map.insert((192_168_1_1, 8080), 1234), None);
-        assert_eq!(map.insert((192_168_1_1, 8080), 5678), Some(1234));
-        assert_eq!(map.get(&(192_168_1_1, 8080)), Some(5678));
-        assert_eq!(map.len(), 1);
+        let mut map = CuckooFlowMap::new(100);
+        let flow = FiveTupleV4 {
+            src_ip: 1,
+            dst_ip: 2,
+            src_port: 100,
+            dst_port: 200,
+            proto: 6,
+        };
+
+        let state = FlowState { packets: 1, bytes: 64, last_seen: 0 };
+        assert!(map.insert(flow, state).is_ok());
+        assert!(map.get(&flow).is_some());
     }
 
     #[test]
     fn test_remove() {
-        let mut map = CuckooSocketMap::<u16>::new(16);
-
-        map.insert((192_168_1_1, 8080), 1234);
-        assert_eq!(map.remove(&(192_168_1_1, 8080)), Some(1234));
-        assert_eq!(map.get(&(192_168_1_1, 8080)), None);
-        assert_eq!(map.remove(&(192_168_1_1, 8080)), None);
-        assert_eq!(map.len(), 0);
-    }
-
-    #[test]
-    fn test_many_insertions() {
-        let mut map = CuckooSocketMap::<u16>::new(64);
-
-        // Insert 1000 entries
-        for i in 0..1000u16 {
-            let ip = 192_168_0_0 + i as u32;
-            let port = 8000 + i;
-            map.insert((ip, port), i);
+        #[derive(Debug, Clone)]
+        pub struct FlowState {
+            pub packets: u64,
+            pub bytes: u64,
+            pub last_seen: u64,  // Timestamp in Millis
         }
 
-        assert_eq!(map.len(), 1000);
+        let mut map = CuckooFlowMap::new(100);
+        let flow = FiveTupleV4 {
+            src_ip: 1,
+            dst_ip: 2,
+            src_port: 100,
+            dst_port: 200,
+            proto: 6,
+        };
 
-        // Verify all entries
-        for i in 0..1000u16 {
-            let ip = 192_168_0_0 + i as u32;
-            let port = 8000 + i;
-            assert_eq!(map.get(&(ip, port)), Some(i));
-        }
-
-        println!("Load factor after 1000 insertions: {:.2}", map.load_factor());
-    }
-
-    #[test]
-    fn test_resize() {
-        let mut map = CuckooSocketMap::<u16>::new(4);
-
-        // Force multiple resizes
-        for i in 0..100u16 {
-            map.insert((i as u32, i), i);
-        }
-
-        assert_eq!(map.len(), 100);
-
-        // Verify all entries still accessible
-        for i in 0..100u16 {
-            assert_eq!(map.get(&(i as u32, i)), Some(i));
-        }
-    }
-
-    #[test]
-    fn test_clear() {
-        let mut map = CuckooSocketMap::<u16>::new(16);
-
-        for i in 0..10u16 {
-            map.insert((i as u32, i), i);
-        }
-
-        assert_eq!(map.len(), 10);
-        map.clear();
-        assert_eq!(map.len(), 0);
-        assert!(map.is_empty());
-        assert_eq!(map.get(&(5, 5)), None);
-    }
-
-    #[test]
-    fn test_collision_handling() {
-        let mut map = CuckooSocketMap::<u16>::new(8);
-
-        // Insert many entries that may cause collisions
-        for i in 0..50u16 {
-            let ip = 192_168_1_1;
-            let port = 8000 + i;
-            map.insert((ip, port), i);
-        }
-
-        // Verify all entries
-        for i in 0..50u16 {
-            let ip = 192_168_1_1;
-            let port = 8000 + i;
-            assert_eq!(map.get(&(ip, port)), Some(i), "Failed at index {}", i);
-        }
+        let state = FlowState { packets: 1, bytes: 64, last_seen: 0 };
+        map.insert(flow, state).ok();
+        assert!(map.remove(&flow).is_some());
+        assert!(map.get(&flow).is_none());
     }
 }

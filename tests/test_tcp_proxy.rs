@@ -34,6 +34,7 @@ use tcp_lib::{
     EngineMode, get_delayed_tcp_proxy_nfg, get_simple_tcp_proxy_nfg, initialize_engine, ProxyConnection, setup_pipelines,
     configure_interfaces,
 };
+use tcp_lib::runtime::RunTimeThread;
 
 #[test]
 fn tcp_proxy() {
@@ -145,11 +146,12 @@ fn tcp_proxy() {
             .addr(),
         configuration.engine.port,
     );
-
+    
+    let mut runtime_thread = RunTimeThread { runtime };
     // start the run_time receive thread
-    runtime.start();
+    runtime_thread.start();
 
-    let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
     mtx.send(MessageFrom::StartEngine).unwrap();
     thread::sleep(Duration::from_millis(2000 as u64));
 

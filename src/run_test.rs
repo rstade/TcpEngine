@@ -25,6 +25,7 @@ use {crate::initialize_engine, crate::ReleaseCause};
 use {crate::TcpState, crate::TcpStatistics};
 use crate::analysis::{collect_from_main_reply, generate_c_records_filename};
 use crate::EngineMode;
+use crate::runtime::RunTimeThread;
 
 // Centralized test timing constants
 const STARTUP_DELAY_MS: u64 = 1000;
@@ -44,16 +45,17 @@ pub enum TestType {
 // we use this function for the integration tests
 pub fn run_test(test_type: TestType) {
     let (mut runtime, mode, _running) = initialize_engine(true);
+    let mut runtime_thread = RunTimeThread { runtime };
     debug!("*** run_test logging is in debug mode ***");
 
-    let run_configuration = runtime.run_configuration.clone();
+    let run_configuration = runtime_thread.runtime.run_configuration.clone();
     let configuration = &run_configuration.engine_configuration;
     let run_configuration_cloned = run_configuration.clone();
 
     if configuration.test_size.is_none() {
         error!(
             "missing parameter 'test_size' in configuration file {}",
-            runtime.toml_filename()
+            runtime_thread.runtime.toml_filename()
         );
         process::exit(1);
     };
@@ -62,15 +64,15 @@ pub fn run_test(test_type: TestType) {
     #[cfg(any(test, feature = "test-support"))]
     let fin_by_client = configuration.engine.fin_by_client.unwrap_or(1000);
 
-    runtime.start_schedulers().expect("cannot start schedulers");
+    runtime_thread.runtime.start_schedulers().expect("cannot start schedulers");
 
-    install_pipelines_for_all_cores(&mut runtime, run_configuration_cloned, get_tcp_generator_nfg())
+    install_pipelines_for_all_cores(&mut runtime_thread.runtime, run_configuration_cloned, get_tcp_generator_nfg())
         .expect("cannot install pipelines");
 
     let mut pci = None;
     let mut kni = None;
 
-    for port in runtime
+    for port in runtime_thread.runtime
         .context()
         .expect("no context")
         .ports
@@ -83,7 +85,7 @@ pub fn run_test(test_type: TestType) {
         } else {
             pci = Some(port.clone());
             kni = Some(
-                runtime
+                runtime_thread.runtime
                     .context()
                     .unwrap()
                     .ports
@@ -105,17 +107,17 @@ pub fn run_test(test_type: TestType) {
     );
     let rx_queues = pci.as_ref().unwrap().rx_cores.as_ref().unwrap().len() as u16;
     let rfs_mode = pci.as_ref().unwrap().flow_steering_mode().unwrap_or(FlowSteeringMode::Port);
-    let cores = runtime.context().unwrap().active_cores.clone();
+    let cores = runtime_thread.runtime.context().unwrap().active_cores.clone();
     debug!("rx_queues = { }, port mask = 0x{:x}", rx_queues, port_mask);
 
     // start the controller
-    runtime.start();
+    runtime_thread.start();
 
     // give threads some time to do initialization work
     thread::sleep(Duration::from_millis(STARTUP_DELAY_MS));
 
     // Get exit notification receiver to detect early runtime thread termination
-    let exit_rx = runtime.take_exit_receiver().expect("no exit receiver available");
+    let exit_rx = runtime_thread.runtime.take_exit_receiver().expect("no exit receiver available");
 
     // Helper to detect early runtime termination (used before stats collection)
     fn runtime_exit_triggered(exit_rx: &Receiver<RuntimeExit>) -> bool {
@@ -162,7 +164,7 @@ pub fn run_test(test_type: TestType) {
     }
     // start generator
 
-    let (mtx, reply_mrx) = runtime.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
     // track early runtime exit to skip stats/collection
     let mut runtime_exited_early = false;
     mtx.send(MessageFrom::StartEngine).unwrap();
@@ -374,7 +376,7 @@ pub fn run_test(test_type: TestType) {
     drop(run_configuration);
     info!("Shutdown: dropped run_configuration (reply sender clone on main side released)");
     // Also drop runtime to release the local sender clone held inside it
-    drop(runtime);
+    drop(runtime_thread);
     info!("Shutdown: dropped runtime (remaining local sender clone released)");
     // Wait bounded time for the runtime thread to terminate by observing the reply channel closing
     info!(

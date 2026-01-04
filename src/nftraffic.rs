@@ -14,7 +14,7 @@ use bincode::{deserialize};
 use separator::Separatable;
 
 use crate::tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
-use crate::{get_server_addresses, Configuration};
+use crate::{get_server_addresses, Configuration, RunConfigType};
 
 use crate::netfcts::tcp_common::{
     TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size, TcpFlags,
@@ -69,7 +69,7 @@ pub fn setup_generator<FPL>(
     pci: CacheAligned<PortQueueTxBuffered>,
     kni: CacheAligned<PortQueue>,
     sched: &mut StandaloneScheduler,
-    run_configuration: RunConfiguration<Configuration, Store64<Extension>>,
+    run_configuration: RunConfigType,
     set_payload: FPL,
 ) where
     FPL: FnPayload,
@@ -93,7 +93,7 @@ pub fn setup_generator<FPL>(
     };
     debug!("enter setup_generator {}", pipeline_id);
 
-    let tx = run_configuration.remote_sender.clone();
+    let tx = run_configuration.main_sender_fm.clone();
 
     let detailed_records = engine_config.detailed_records.unwrap_or(false);
     let mut cm_c = ConnectionManagerC::new(
@@ -104,7 +104,7 @@ pub fn setup_generator<FPL>(
     );
     let mut cm_s = ConnectionManagerS::new(detailed_records);
 
-    let mut timeouts = Timeouts::default_or_some(&engine_config.timeouts);
+    let mut timeouts = Timeouts::default_or_some(engine_config.timeouts.as_ref());
     let max_open = engine_config.max_open.unwrap_or(cm_c.available_ports_count());
     let fin_by_client = engine_config.fin_by_client.unwrap_or(1000);
     let fin_by_server = engine_config.fin_by_server.unwrap_or(1);
@@ -1174,10 +1174,10 @@ pub fn setup_generator<FPL>(
     .send(pci.clone());
 
     let uuid_pipe2kni = install_task(sched, "Pipe2Kni", pipe2kni);
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::Pipe2Kni))
+    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::KniSend))
         .unwrap();
 
     let uuid_pipe2pci = install_task(sched, "Pipe2Pci", pipe2pci);
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pci, TaskType::Pipe2Pci))
+    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pci, TaskType::EgressSend))
         .unwrap();
 }

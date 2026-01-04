@@ -15,11 +15,12 @@ use crate::recstore::{Store64, Extension};
 #[derive(Debug)]
 pub enum TaskType {
     PacketGenerator = 0,
-    Pipe2Kni = 1,
-    Pipe2Pci = 2,
+    KniSend = 1,
+    EgressSend = 2,
     TickGenerator = 3,
     BypassPipe = 4,
-    NoTaskTypes = 5, // for iteration over TaskType
+    IngressSend = 5,
+    NoTaskTypes = 6, // for iteration over TaskType
 }
 
 pub fn install_task<T: Executable + 'static>(sched: &mut StandaloneScheduler, task_name: &str, task: T) -> Uuid {
@@ -48,12 +49,22 @@ pub struct PacketInjector {
 pub const PRIVATE_ETYPE_PACKET: u16 = 0x08FF;
 pub const PRIVATE_ETYPE_TIMER: u16 = 0x08FE;
 pub const ETYPE_IPV4: u16 = 0x0800;
+pub const IDX_ETYPE_IPV4: usize = 0;
 pub const ETYPE_IPV6: u16 = 0x86dd;
+pub const IDX_ETYPE_IPV6: usize = 1;
 pub const ETYPE_ARP: u16 = 0x0806;
+pub const IDX_ETYPE_ARP: usize = 2;
 pub const ETYPE_VLAN: u16 = 0x8100;
+pub const IDX_ETYPE_VLAN: usize = 3;
 pub const ETYPE_DOUBLE_VLAN: u16 = 0x9100;
+pub const IDX_ETYPE_DOUBLE_VLAN: usize = 4;
+// must be the largest one
+pub const IDX_ETYPE_OTHER: usize = 5;
 
 pub const INJECTOR_BATCH_SIZE: usize = 32;
+
+pub const IPPROTO_TCP: u8 = 6;
+pub const IPPROTO_UDP: u8 = 17;
 
 #[inline]
 pub fn private_etype(etype: &u16) -> bool {

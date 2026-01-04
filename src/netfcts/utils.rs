@@ -4,25 +4,14 @@ use rand::seq::SliceRandom;
 
 #[derive(Deserialize, Clone)]
 pub struct Timeouts {
-    pub established: Option<u64>, // in millis
-}
-
-impl Default for Timeouts {
-    fn default() -> Timeouts {
-        Timeouts { established: Some(200) }
-    }
+    pub established: Option<u64>,
 }
 
 impl Timeouts {
-    pub fn default_or_some(timeouts: &Option<Timeouts>) -> Timeouts {
-        let mut t = Timeouts::default();
-        if timeouts.is_some() {
-            let timeouts = timeouts.clone().unwrap();
-            if timeouts.established.is_some() {
-                t.established = timeouts.established;
-            }
-        }
-        t
+    pub fn default_or_some(timeouts: Option<&Timeouts>) -> Self {
+        timeouts.cloned().unwrap_or_else(|| Timeouts {
+            established: Some(200)
+        })
     }
 }
 

@@ -14,7 +14,7 @@ use e2d2::interface::{PortQueue};
 use e2d2::scheduler::{StandaloneScheduler, Scheduler, Runnable};
 use e2d2::allocators::CacheAligned;
 use e2d2::operators::{ReceiveBatch, Batch, TransformBatch};
-use tcp_lib::Configuration;
+use tcp_lib::{Configuration, RunTimeType};
 use std::collections::{HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +25,7 @@ use tcp_lib::netfcts::recstore::{Extension, Store64};
 use tcp_lib::netfcts::comm::{MessageFrom};
 use uuid::Uuid;
 use tcp_lib::netfcts::RunTime;
+use tcp_lib::runtime::RunTimeThread;
 
 pub fn nf_macswap<T: 'static + Batch>(parent: T) -> TransformBatch<T> {
     parent.transform(Box::new(move |pkt| {
@@ -65,7 +66,7 @@ pub fn macswap() {
     // cannot directly read toml file from command line, as cargo test owns it. Thus we take a detour and read it from a file.
     const INDIRECTION_FILE: &str = "./tests/toml_file.txt";
 
-    let mut run_time: RunTime<Configuration, Store64<Extension>> = match RunTime::init_indirectly(INDIRECTION_FILE) {
+    let mut run_time: RunTimeType = match RunTime::init_indirectly(INDIRECTION_FILE) {
         Ok(run_time) => run_time,
         Err(err) => panic!("failed to initialize RunTime {}", err),
     };
@@ -100,13 +101,14 @@ pub fn macswap() {
         ))
         .expect("cannot install pipelines");
 
+    let mut runtime_thread = RunTimeThread { runtime: run_time };
     // start the controller
-    run_time.start();
+    runtime_thread.start();
 
     // give threads some time to do initialization work
     thread::sleep(Duration::from_millis(1000 as u64));
 
-    let (mtx, _reply_mrx) = run_time.get_main_channel().expect("cannot get main channel");
+    let (mtx, _reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
     // start generator
     mtx.send(MessageFrom::StartEngine).unwrap();
 
