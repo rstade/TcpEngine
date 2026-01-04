@@ -11,7 +11,6 @@ use std::io::{Read, Write, BufWriter};
 use std::fs::File;
 use std::process;
 use std::sync::mpsc::{TryRecvError, Receiver};
-use crate::netfcts::RuntimeExit;
 
 use e2d2::interface::{FlowSteeringMode};
 
@@ -25,7 +24,7 @@ use {crate::initialize_engine, crate::ReleaseCause};
 use {crate::TcpState, crate::TcpStatistics};
 use crate::analysis::{collect_from_main_reply, generate_c_records_filename};
 use crate::EngineMode;
-use crate::runtime::RunTimeThread;
+use crate::runtime::{RunTimeThread, RuntimeExit};
 
 // Centralized test timing constants
 const STARTUP_DELAY_MS: u64 = 1000;

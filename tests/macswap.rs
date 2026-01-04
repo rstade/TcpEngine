@@ -14,18 +14,16 @@ use e2d2::interface::{PortQueue};
 use e2d2::scheduler::{StandaloneScheduler, Scheduler, Runnable};
 use e2d2::allocators::CacheAligned;
 use e2d2::operators::{ReceiveBatch, Batch, TransformBatch};
-use tcp_lib::{Configuration, RunTimeType};
+use tcp_lib::RunTimeType;
 use std::collections::{HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use std::process;
-use tcp_lib::netfcts::recstore::{Extension, Store64};
 use tcp_lib::netfcts::comm::{MessageFrom};
 use uuid::Uuid;
-use tcp_lib::netfcts::RunTime;
-use tcp_lib::runtime::RunTimeThread;
+use tcp_lib::runtime::{RunTime, RunTimeThread};
 
 pub fn nf_macswap<T: 'static + Batch>(parent: T) -> TransformBatch<T> {
     parent.transform(Box::new(move |pkt| {
@@ -106,22 +104,22 @@ pub fn macswap() {
     runtime_thread.start();
 
     // give threads some time to do initialization work
-    thread::sleep(Duration::from_millis(1000 as u64));
+    thread::sleep(Duration::from_millis(1000u64));
 
     let (mtx, _reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
     // start generator
     mtx.send(MessageFrom::StartEngine).unwrap();
 
-    thread::sleep(Duration::from_millis(1000 as u64));
+    thread::sleep(Duration::from_millis(1000u64));
 
     //main loop
     println!("press ctrl-c to terminate MacSwap ...");
     while running.load(Ordering::SeqCst) {
-        thread::sleep(Duration::from_millis(200 as u64)); // Sleep for a bit
+        thread::sleep(Duration::from_millis(200u64)); // Sleep for a bit
     }
 
     mtx.send(MessageFrom::Exit).unwrap();
 
-    thread::sleep(Duration::from_millis(200 as u64)); // Sleep for a bit
-    std::process::exit(0);
+    thread::sleep(Duration::from_millis(200u64)); // Sleep for a bit
+    process::exit(0);
 }

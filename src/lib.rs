@@ -46,7 +46,7 @@ use std::str::FromStr;
 use e2d2::scheduler::*;
 use e2d2::interface::{PmdPort, Pdu, PciQueueType, KniQueueType};
 
-use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, RunTime, strip_payload};
+use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, strip_payload};
 use netfcts::utils::Timeouts;
 
 use std::collections::HashMap;
@@ -68,6 +68,8 @@ use nftraffic::setup_generator;
 pub use runtime::install_pipelines_for_all_cores;
 use crate::nftcpproxy::setup_tcp_proxy;
 use crate::proxy_helper::{DelayedMode, PduAllocator};
+use crate::runtime::RunTime;
+
 pub type RunConfigType = RunConfiguration<Configuration, MessageFrom<Store64<Extension>>, MessageFrom<Store64<Extension>>>;
 pub type RunTimeType = RunTime<Configuration, MessageFrom<Store64<Extension>>, MessageTo<Store64<Extension>>, MessageFrom<Store64<Extension>>>;
 

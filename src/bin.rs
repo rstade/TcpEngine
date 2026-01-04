@@ -15,7 +15,7 @@ use tcp_lib::netfcts::recstore::{Store64, Extension};
 use std::mem::size_of;
 use std::sync::mpsc::{TryRecvError, channel};
 use e2d2::native::zcsi::mbuf_avail_count;
-use tcp_lib::runtime::RunTimeThread;
+use tcp_lib::runtime::{RunTimeThread, RuntimeExit};
 
 const STARTUP_DELAY_MS: u64 = 1000;
 const PRINT_DELAY_MS: u64 = 200;
@@ -76,13 +76,13 @@ pub fn main() {
     let exit_rx = runtime_thread.runtime.take_exit_receiver().expect("no exit receiver available");
 
     // Helper to detect early runtime termination uniformly (visible to both branches below)
-    fn runtime_exit_triggered(exit_rx: &std::sync::mpsc::Receiver<tcp_lib::netfcts::RuntimeExit>) -> bool {
+    fn runtime_exit_triggered(exit_rx: &std::sync::mpsc::Receiver<RuntimeExit>) -> bool {
         match exit_rx.try_recv() {
-            Ok(tcp_lib::netfcts::RuntimeExit::Ok) => {
+            Ok(RuntimeExit::Ok) => {
                 info!("Runtime thread exited normally (early). Initiating shutdown.");
                 true
             }
-            Ok(tcp_lib::netfcts::RuntimeExit::Err(msg)) => {
+            Ok(RuntimeExit::Err(msg)) => {
                 info!("Runtime thread exited with error: {}. Initiating shutdown.", msg);
                 true
             }
@@ -319,12 +319,12 @@ pub fn main() {
     loop {
         // observe exit channel first to react to early exit
         match exit_rx.try_recv() {
-            Ok(tcp_lib::netfcts::RuntimeExit::Ok) => {
+            Ok(RuntimeExit::Ok) => {
                 info!("Shutdown: runtime exit signal received (Ok)");
                 terminated = true;
                 break;
             }
-            Ok(tcp_lib::netfcts::RuntimeExit::Err(msg)) => {
+            Ok(RuntimeExit::Err(msg)) => {
                 info!("Shutdown: runtime exit signal received with error: {}", msg);
                 terminated = true;
                 break;

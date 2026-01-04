@@ -17,11 +17,8 @@ impl fmt::Display for PipelineId {
     }
 }
 
-pub trait RTMessage {
-    fn is_exit(&self) -> bool;
-    fn is_fetch_counter(&self) -> bool;
-    fn is_fetch_crecords(&self) -> bool;
-    fn pipeline_id(&self) -> Option<&PipelineId>;
+pub trait RuntimeMessage {
+
 }
 
 #[derive(Debug)]
@@ -56,52 +53,10 @@ pub enum MessageTo<T> {
     Exit, // exit recv thread
 }
 
-impl<T> RTMessage for MessageFrom<T> {
-    fn is_exit(&self) -> bool {
-        matches!(self, MessageFrom::Exit)
-    }
+impl<T> RuntimeMessage for MessageFrom<T> {
 
-    fn is_fetch_counter(&self) -> bool {
-        matches!(self, MessageFrom::FetchCounter)
-    }
-
-    fn is_fetch_crecords(&self) -> bool {
-        matches!(self, MessageFrom::FetchCRecords)
-    }
-
-    fn pipeline_id(&self) -> Option<&PipelineId> {
-        match self {
-            MessageFrom::Channel(id, _)
-            | MessageFrom::Task(id, _, _)
-            | MessageFrom::Counter(id, _, _, _)
-            | MessageFrom::CRecords(id, _, _)
-            | MessageFrom::TimeStamps(id, _, _)
-            | MessageFrom::EtypeCnt(id, _) => Some(id),
-            _ => None,
-        }
-    }
 }
 
-impl<T> RTMessage for MessageTo<T> {
-    fn is_exit(&self) -> bool {
-        matches!(self, MessageTo::Exit)
-    }
+impl<T> RuntimeMessage for MessageTo<T> {
 
-    fn is_fetch_counter(&self) -> bool {
-        matches!(self, MessageTo::FetchCounter)
-    }
-
-    fn is_fetch_crecords(&self) -> bool {
-        matches!(self, MessageTo::FetchCRecords)
-    }
-
-    fn pipeline_id(&self) -> Option<&PipelineId> {
-        match self {
-            MessageTo::Counter(id, _, _, _)
-            | MessageTo::CRecords(id, _, _)
-            | MessageTo::TimeStamps(id, _, _)
-            | MessageTo::EtypeCnt(id, _) => Some(id),
-            _ => None,
-        }
-    }
 }

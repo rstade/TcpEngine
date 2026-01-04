@@ -146,14 +146,14 @@ fn tcp_proxy() {
             .addr(),
         configuration.engine.port,
     );
-    
+
     let mut runtime_thread = RunTimeThread { runtime };
     // start the run_time receive thread
     runtime_thread.start();
 
     let (mtx, reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
     mtx.send(MessageFrom::StartEngine).unwrap();
-    thread::sleep(Duration::from_millis(2000 as u64));
+    thread::sleep(Duration::from_millis(2000u64));
 
     debug!(
         "Connection record sizes = {} + {} + {}",
