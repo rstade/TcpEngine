@@ -15,7 +15,8 @@ use tcp_lib::netfcts::recstore::{Store64, Extension};
 use std::mem::size_of;
 use std::sync::mpsc::{TryRecvError, channel};
 use e2d2::native::zcsi::mbuf_avail_count;
-use tcp_lib::runtime::{RunTimeThread, RuntimeExit};
+use netfcts::RuntimeExit;
+use tcp_lib::runtime::{RuntimeThread};
 
 const STARTUP_DELAY_MS: u64 = 1000;
 const PRINT_DELAY_MS: u64 = 200;
@@ -64,7 +65,7 @@ pub fn main() {
 
     let cores = runtime.context().unwrap().active_cores.clone();
 
-    let mut runtime_thread = RunTimeThread { runtime };
+    let mut runtime_thread = RuntimeThread { runtime };
     // start the run_time
     runtime_thread.start();
 

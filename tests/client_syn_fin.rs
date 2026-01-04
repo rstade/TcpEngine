@@ -31,7 +31,7 @@ use tcp_lib::netfcts::tcp_common::{L234Data, ReleaseCause, TcpState};
 use tcp_lib::{
     get_delayed_tcp_proxy_nfg, get_simple_tcp_proxy_nfg, initialize_engine, setup_pipelines, EngineMode, ProxyConnection,
 };
-use tcp_lib::runtime::RunTimeThread;
+use tcp_lib::runtime::RuntimeThread;
 
 #[test]
 fn delayed_binding_proxy() {
@@ -124,7 +124,7 @@ fn delayed_binding_proxy() {
 
     info!("proxy IP address: {}, port = {}", proxy_addr.0, proxy_addr.1);
 
-    let mut runtime_thread = RunTimeThread { runtime };
+    let mut runtime_thread = RuntimeThread { runtime };
     // start the run_time receive thread
     runtime_thread.start();
 

@@ -24,7 +24,7 @@ use tcp_lib::netfcts::comm::{MessageFrom, MessageTo};
 use tcp_lib::netfcts::conrecord::HasTcpState;
 use tcp_lib::netfcts::tcp_common::L234Data;
 use tcp_lib::netfcts::tcp_common::ReleaseCause;
-use tcp_lib::runtime::RunTimeThread;
+use tcp_lib::runtime::RuntimeThread;
 
 #[test]
 fn delayed_binding_proxy() {
@@ -96,7 +96,7 @@ fn delayed_binding_proxy() {
         configuration.engine.port,
     );
 
-    let mut runtime_thread = RunTimeThread { runtime };
+    let mut runtime_thread = RuntimeThread { runtime };
     // start the run_time receive thread
     runtime_thread.start();
 

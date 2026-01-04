@@ -46,7 +46,7 @@ use std::str::FromStr;
 use e2d2::scheduler::*;
 use e2d2::interface::{PmdPort, Pdu, PciQueueType, KniQueueType};
 
-use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, strip_payload};
+use netfcts::{new_port_queues_for_core, physical_ports_for_core, RunConfiguration, strip_payload, Runtime};
 use netfcts::utils::Timeouts;
 
 use std::collections::HashMap;
@@ -68,10 +68,9 @@ use nftraffic::setup_generator;
 pub use runtime::install_pipelines_for_all_cores;
 use crate::nftcpproxy::setup_tcp_proxy;
 use crate::proxy_helper::{DelayedMode, PduAllocator};
-use crate::runtime::RunTime;
 
 pub type RunConfigType = RunConfiguration<Configuration, MessageFrom<Store64<Extension>>, MessageFrom<Store64<Extension>>>;
-pub type RunTimeType = RunTime<Configuration, MessageFrom<Store64<Extension>>, MessageTo<Store64<Extension>>, MessageFrom<Store64<Extension>>>;
+pub type RuntimeType = Runtime<Configuration, MessageFrom<Store64<Extension>>, MessageTo<Store64<Extension>>, MessageFrom<Store64<Extension>>>;
 
 // Replacement for former `trait alias` of a function-like constraint
 pub trait FnPayload:
@@ -341,7 +340,7 @@ pub fn configure_interfaces(targets: &[TargetConfig]) -> Result<(), InterfaceCon
     Ok(())
 }
 
-/// This function is called once by each scheduler running as an independent thread on each active core when the RunTime installs the pipelines.
+/// This function is called once by each scheduler running as an independent thread on each active core when the Runtime installs the pipelines.
 /// Currently it iterates through all physical ports which use the respective core and sets up the network function graph (NFG) of the engine for that port and that core.
 /// This happens by adding Runnables to the scheduler. Each Runnable runs to completion. E.g. it takes a packet batch from an ingress queue, processes the packets
 /// following the NFG and puts the packets of the batch into egress queues. After this it returns to the scheduler.
@@ -572,22 +571,22 @@ pub fn get_simple_tcp_proxy_nfg(select_target: Option<FnSelectTarget>) -> impl F
     }
 }
 
-pub fn initialize_engine(indirectly: bool) -> (RunTimeType, EngineMode, Arc<AtomicBool>) {
+pub fn initialize_engine(indirectly: bool) -> (RuntimeType, EngineMode, Arc<AtomicBool>) {
     env_logger::init();
     info!("Reading configuration ..");
 
     // cannot directly read toml file from command line, as cargo test owns it. Thus we take a detour and read it from a file.
     const INDIRECTION_FILE: &str = "./tests/toml_file.txt";
 
-    let mut runtime: RunTimeType = if indirectly {
-        match RunTime::init_indirectly(INDIRECTION_FILE) {
+    let mut runtime: RuntimeType = if indirectly {
+        match Runtime::init_indirectly(INDIRECTION_FILE) {
             Ok(run_time) => run_time,
-            Err(err) => panic!("failed to initialize RunTime {}", err),
+            Err(err) => panic!("failed to initialize Runtime {}", err),
         }
     } else {
-        match RunTime::init() {
+        match Runtime::init() {
             Ok(run_time) => run_time,
-            Err(err) => panic!("failed to initialize RunTime {}", err),
+            Err(err) => panic!("failed to initialize Runtime {}", err),
         }
     };
 

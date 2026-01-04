@@ -144,7 +144,7 @@ pub fn setup_generator<FPL>(
     // setting up a reverse message channel between this pipeline and the main program thread
     debug!("{} setting up reverse channel", pipeline_id);
     let (remote_tx, rx) = channel::<MessageTo<Store64<Extension>>>();
-    // we send the transmitter to the remote receiver of our messages, i.e. the RunTime
+    // we send the transmitter to the remote receiver of our messages, i.e. the Runtime
     tx.send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
 
 

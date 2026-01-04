@@ -23,8 +23,8 @@ pub trait RuntimeMessage {
 
 #[derive(Debug)]
 /// MessageFrom are messages which are sent either
-/// a) from a pipeline (i.e. tasks of a pipeline) to the RunTime thread or
-/// b) from the main thread to the RunTime thread
+/// a) from a pipeline (i.e. tasks of a pipeline) to the Runtime thread or
+/// b) from the main thread to the Runtime thread
 pub enum MessageFrom<T> {
     Channel(PipelineId, Sender<MessageTo<T>>),
     StartEngine,
@@ -41,7 +41,7 @@ pub enum MessageFrom<T> {
     Exit, // exit recv thread
 }
 
-/// MessageTo are messages which are sent by the RunTime either to pipelines or to the main thread
+/// MessageTo are messages which are sent by the Runtime either to pipelines or to the main thread
 pub enum MessageTo<T> {
     FetchCounter, // fetch counters from pipeline
     FetchCRecords,

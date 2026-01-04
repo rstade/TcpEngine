@@ -13,7 +13,7 @@ use std::process;
 use std::sync::mpsc::{TryRecvError, Receiver};
 
 use e2d2::interface::{FlowSteeringMode};
-
+use netfcts::RuntimeExit;
 use separator::Separatable;
 use crate::netfcts::conrecord::HasTcpState;
 
@@ -24,7 +24,7 @@ use {crate::initialize_engine, crate::ReleaseCause};
 use {crate::TcpState, crate::TcpStatistics};
 use crate::analysis::{collect_from_main_reply, generate_c_records_filename};
 use crate::EngineMode;
-use crate::runtime::{RunTimeThread, RuntimeExit};
+use crate::runtime::RuntimeThread;
 
 // Centralized test timing constants
 const STARTUP_DELAY_MS: u64 = 1000;
@@ -43,8 +43,8 @@ pub enum TestType {
 
 // we use this function for the integration tests
 pub fn run_test(test_type: TestType) {
-    let (mut runtime, mode, _running) = initialize_engine(true);
-    let mut runtime_thread = RunTimeThread { runtime };
+    let (runtime, mode, _running) = initialize_engine(true);
+    let mut runtime_thread = RuntimeThread { runtime };
     debug!("*** run_test logging is in debug mode ***");
 
     let run_configuration = runtime_thread.runtime.run_configuration.clone();

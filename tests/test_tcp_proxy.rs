@@ -34,7 +34,7 @@ use tcp_lib::{
     EngineMode, get_delayed_tcp_proxy_nfg, get_simple_tcp_proxy_nfg, initialize_engine, ProxyConnection, setup_pipelines,
     configure_interfaces,
 };
-use tcp_lib::runtime::RunTimeThread;
+use tcp_lib::runtime::RuntimeThread;
 
 #[test]
 fn tcp_proxy() {
@@ -147,7 +147,7 @@ fn tcp_proxy() {
         configuration.engine.port,
     );
 
-    let mut runtime_thread = RunTimeThread { runtime };
+    let mut runtime_thread = RuntimeThread { runtime };
     // start the run_time receive thread
     runtime_thread.start();
 

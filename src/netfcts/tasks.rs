@@ -120,7 +120,7 @@ impl<'a> PacketInjector {
         self
     }
 
-    /// Provide a shutdown notifier (RunTime message sender) so the injector can
+    /// Provide a shutdown notifier (Runtime message sender) so the injector can
     /// trigger a graceful program exit if a fatal condition occurs.
     pub fn with_shutdown_tx(mut self, tx: Sender<MessageFrom<Store64<Extension>>>) -> PacketInjector {
         self.shutdown_tx = Some(tx);
