@@ -51,15 +51,15 @@ where
 
 
 pub struct RuntimeThread<T:Sized + Clone + Send, TStore: SimpleStore + Clone + 'static> {
-    pub runtime: Runtime<T, MessageFrom<TStore>, MessageTo<TStore>, MessageFrom<TStore>>,
+    pub runtime: Runtime<T, MessageFrom<TStore>, MessageTo<TStore>, MessageFrom<TStore>, MessageTo<TStore>>
 }
 /// start spawns_run_time_thread and consumes self.context and self.local_receiver (thread needs static lifetime)
 
 impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStore> {
     pub fn start(&mut self) {
         let mut context = self.runtime.context.take().unwrap();
-        let reply_to_main = self.runtime.rt_sender_tm.clone();
-        let rt_receiver_fm = self.runtime.rt_receiver_fm.take().unwrap();
+        let tx_tm = self.runtime.tx_tm.clone();
+        let rx_fm = self.runtime.rx_fm.take().unwrap();
 
         // create exit notification channel and keep receiver for main
         let (exit_tx, exit_rx) = channel::<RuntimeExit>();
@@ -82,7 +82,7 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                 setup_kernel_interfaces(&context);
                 // communicate with schedulers and main thread:
                 loop {
-                    match rt_receiver_fm.recv_timeout(Duration::from_millis(10)) {
+                    match rx_fm.recv_timeout(Duration::from_millis(10)) {
                         Ok(MessageFrom::StartEngine) => {
                             debug!("starting generator tasks");
                             for s in &context.scheduler_channels {
@@ -133,7 +133,7 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                         }
                         Ok(MessageFrom::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter)) => {
                             debug!("{}: received Counter", pipeline_id);
-                            reply_to_main
+                            tx_tm
                                 .send(MessageTo::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter))
                                 .unwrap();
                         }
@@ -143,10 +143,10 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                             }
                         }
                         Ok(MessageFrom::EtypeCnt(pipeline_id, etype_cnt)) => {
-                            reply_to_main.send(MessageTo::EtypeCnt(pipeline_id, etype_cnt)).unwrap();
+                            tx_tm.send(MessageTo::EtypeCnt(pipeline_id, etype_cnt)).unwrap();
                         }
                         Ok(MessageFrom::CRecords(pipeline_id, c_records_client, c_records_server)) => {
-                            reply_to_main
+                            tx_tm
                                 .send(MessageTo::CRecords(pipeline_id, c_records_client, c_records_server))
                                 .unwrap();
                         }
@@ -156,7 +156,7 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                             }
                         }
                         Ok(MessageFrom::TimeStamps(p, t0, t1)) => {
-                            reply_to_main.send(MessageTo::TimeStamps(p, t0, t1)).unwrap();
+                            tx_tm.send(MessageTo::TimeStamps(p, t0, t1)).unwrap();
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(e) => {

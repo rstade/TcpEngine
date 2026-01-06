@@ -12,7 +12,7 @@ use macaddr::MacAddr6;
 use crate::comm::MessageFrom;
 use crate::recstore::{Store64, Extension};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskType {
     PacketGenerator = 0,
     KniSend = 1,

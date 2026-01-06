@@ -163,7 +163,7 @@ pub fn run_test(test_type: TestType) {
     }
     // start generator
 
-    let (mtx, reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime_thread.runtime.take_main_endpoints().expect("cannot get main channel");
     // track early runtime exit to skip stats/collection
     let mut runtime_exited_early = false;
     mtx.send(MessageFrom::StartEngine).unwrap();

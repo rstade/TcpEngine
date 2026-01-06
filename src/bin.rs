@@ -95,7 +95,7 @@ pub fn main() {
         }
     }
 
-    let (mtx, reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime_thread.runtime.take_main_endpoints().expect("cannot get main channel");
 
     info!("before run: available mbufs in memory pool= {:6}\n", unsafe {
         mbuf_avail_count()

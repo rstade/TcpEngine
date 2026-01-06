@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "netfcts"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "e2d2",
  "ipnet",
@@ -423,6 +423,7 @@ dependencies = [
  "separator",
  "serde",
  "serde_derive",
+ "tokio",
  "toml",
  "uuid",
 ]
@@ -470,6 +471,12 @@ dependencies = [
  "cfg_aliases",
  "libc",
 ]
+
+[[package]]
+name = "pin-project-lite"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b3cff922bd51709b605d9ead9aa71031d81447142d828eb4a6eba76fe619f9b"
 
 [[package]]
 name = "powerfmt"
@@ -741,6 +748,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "time",
+ "tokio",
  "toml",
  "uuid",
 ]
@@ -791,6 +799,15 @@ name = "time-core"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef927ca75afb808a4d64dd374f00a2adf8d0fcff8e7b184af886c3c87ec4a3f3"
+
+[[package]]
+name = "tokio"
+version = "1.49.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72a2903cd7736441aac9df9d7688bd0ce48edccaadf181c3b90be801e81d3d86"
+dependencies = [
+ "pin-project-lite",
+]
 
 [[package]]
 name = "toml"

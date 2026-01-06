@@ -17,7 +17,7 @@ path = "src/bin.rs"
 [dependencies]
 # we are using here e2de from branch e2d2-rs-v1 of https://github.com/rstade/NetBricks
 e2d2 = { version = "=1.0.11", path = "../NetBricks/framework", features = ["performance"] }
-netfcts = { version = "0.1.0", path = "src/netfcts" }
+netfcts = { version = "0.2.0", path = "src/netfcts" }
 fnv = "*"
 log = ">=0.4"
 env_logger = ">=0.5"
@@ -36,6 +36,7 @@ rustyline = ">=10.1.1"
 clap = ">=4.1"
 rand = ">=0.8"
 libc = "0.2.177"
+tokio = "1.49.0"
 
 [features]
 default = ["profiling"]

@@ -128,7 +128,7 @@ fn delayed_binding_proxy() {
     // start the run_time receive thread
     runtime_thread.start();
 
-    let (mtx, reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
+    let (mtx, reply_mrx) = runtime_thread.runtime.take_main_endpoints().expect("cannot get main channel");
     mtx.send(MessageFrom::StartEngine).unwrap();
     thread::sleep(Duration::from_millis(2000u64));
 

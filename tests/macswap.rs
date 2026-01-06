@@ -107,7 +107,7 @@ pub fn macswap() {
     // give threads some time to do initialization work
     thread::sleep(Duration::from_millis(1000u64));
 
-    let (mtx, _reply_mrx) = runtime_thread.runtime.get_main_channel().expect("cannot get main channel");
+    let (mtx, _reply_mrx) = runtime_thread.runtime.take_main_endpoints().expect("cannot take main endpoints");
     // start generator
     mtx.send(MessageFrom::StartEngine).unwrap();
 

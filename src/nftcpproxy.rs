@@ -54,7 +54,7 @@ pub fn setup_tcp_proxy<F1, F2>(
     let servers: Vec<L234Data> = ctx.servers.clone();
     let pipeline_id = ctx.pipeline_id.clone();
     debug!("enter setup_forwarder {}", pipeline_id);
-    let tx2runtime = run_configuration.main_sender_fm.clone();
+    let tx2runtime = run_configuration.tx_fm.clone();
     let mut cm: ConnectionManager = ctx.cm;
     let timeouts = ctx.timeouts;
     let mut wheel = ctx.wheel;

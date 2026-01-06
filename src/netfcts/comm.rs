@@ -17,15 +17,15 @@ impl fmt::Display for PipelineId {
     }
 }
 
-pub trait RuntimeMessage {
+pub trait RuntimeMessage: Clone {
 
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// MessageFrom are messages which are sent either
 /// a) from a pipeline (i.e. tasks of a pipeline) to the Runtime thread or
 /// b) from the main thread to the Runtime thread
-pub enum MessageFrom<T> {
+pub enum MessageFrom<T:Clone> {
     Channel(PipelineId, Sender<MessageTo<T>>),
     StartEngine,
     Task(PipelineId, Uuid, TaskType),
@@ -40,9 +40,9 @@ pub enum MessageFrom<T> {
     EtypeCnt(PipelineId, [u64; IDX_ETYPE_OTHER + 1]),
     Exit, // exit recv thread
 }
-
+#[derive(Debug, Clone)]
 /// MessageTo are messages which are sent by the Runtime either to pipelines or to the main thread
-pub enum MessageTo<T> {
+pub enum MessageTo<T:Clone> {
     FetchCounter, // fetch counters from pipeline
     FetchCRecords,
     Counter(PipelineId, TcpCounter, TcpCounter, Option<Vec<(u64, usize, usize)>>),
@@ -53,10 +53,10 @@ pub enum MessageTo<T> {
     Exit, // exit recv thread
 }
 
-impl<T> RuntimeMessage for MessageFrom<T> {
+impl<T:Clone> RuntimeMessage for MessageFrom<T> {
 
 }
 
-impl<T> RuntimeMessage for MessageTo<T> {
+impl<T:Clone> RuntimeMessage for MessageTo<T> {
 
 }

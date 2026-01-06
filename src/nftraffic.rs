@@ -93,7 +93,7 @@ pub fn setup_generator<FPL>(
     };
     debug!("enter setup_generator {}", pipeline_id);
 
-    let tx = run_configuration.main_sender_fm.clone();
+    let tx = run_configuration.tx_fm.clone();
 
     let detailed_records = engine_config.detailed_records.unwrap_or(false);
     let mut cm_c = ConnectionManagerC::new(

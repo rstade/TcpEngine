@@ -12,6 +12,8 @@ pub mod recstore;
 pub mod conrecord;
 pub mod cuckoo;
 
+
+use tokio::sync::broadcast;
 use serde_derive::Deserialize;
 use std::collections::{HashMap, HashSet};
 
@@ -57,26 +59,28 @@ use crate::tasks::TaskType;
 use crate::tcp_common::tcp_payload_size;
 
 
-pub struct RunConfiguration<T: Sized + Clone, FM: RuntimeMessage, FW: RuntimeMessage> {
+pub struct RunConfiguration<T: Sized + Clone, FM: RuntimeMessage, FW: RuntimeMessage, TW: RuntimeMessage> {
     pub system_data: SystemData,
     pub netbricks_configuration: NetbricksConfiguration,
     pub engine_configuration: T,
     pub flowdirector_map: HashMap<u16, Arc<FlowDirector>>,
-    pub main_sender_fm: Sender<FM>,
-    pub worker_sender_fw: Sender<FW>,
+    pub tx_fm: Sender<FM>,
+    pub tx_fw: Sender<FW>,
+    pub tx_tw: broadcast::Sender<TW>,
     /// do we run in interactive mode?
     pub b_interactive: bool,
 }
 
-impl<T: Sized + Clone, FM: RuntimeMessage, FW: RuntimeMessage> Clone for RunConfiguration<T, FM, FW> {
+impl<T: Sized + Clone, FM: RuntimeMessage, FW: RuntimeMessage, TW: RuntimeMessage> Clone for RunConfiguration<T, FM, FW, TW> {
     fn clone(&self) -> Self {
         Self {
             system_data: self.system_data.clone(),
             netbricks_configuration: self.netbricks_configuration.clone(),
             engine_configuration: self.engine_configuration.clone(),
             flowdirector_map: self.flowdirector_map.clone(),
-            main_sender_fm: self.main_sender_fm.clone(),
-            worker_sender_fw: self.worker_sender_fw.clone(),
+            tx_fm: self.tx_fm.clone(),
+            tx_fw: self.tx_fw.clone(),
+            tx_tw: self.tx_tw.clone(),
             b_interactive: self.b_interactive,
         }
     }
@@ -96,17 +100,18 @@ pub enum RuntimeExit {
 }
 
 
-pub struct Runtime<T: Sized + Clone + Send, FM: RuntimeMessage, TM: RuntimeMessage, FW: RuntimeMessage> {
-    pub run_configuration: RunConfiguration<T, FM, FW>,
+pub struct Runtime<T: Sized + Clone + Send, FM: RuntimeMessage, TM: RuntimeMessage, FW: RuntimeMessage, TW: RuntimeMessage> {
+    pub run_configuration: RunConfiguration<T, FM, FW, TW>,
     pub context: Option<NetBricksContext>,
-    /// receiver in run_time thread for messages from all the pipelines running, and usually from main thread
-    /// will be moved into the run_time thread
-    pub rt_receiver_fm: Option<Receiver<FM>>,
-    /// a single receiver instance for messages sent by run_time thread and pipelines, usually retrieved by main thread
+
+    /// will be moved into the runtime thread
+    pub rx_fm: Option<Receiver<FM>>,
+    /// a single receiver instance for messages sent by runtime thread and pipelines, usually retrieved by main thread
     /// see also get_main_channel()
-    main_receiver_tm: Option<Receiver<TM>>,
-    pub rt_sender_tm: Sender<TM>,
-    pub rt_receiver_fw: Receiver<FW>,
+    rx_tm: Option<Receiver<TM>>,
+    pub tx_tm: Sender<TM>,
+    /// receiver in runtime thread for messages from all the pipelines running, will be moved into the runtime thread
+    pub rx_fw: Option<Receiver<FW>>,
     toml_file: String,
     /// exit notification receiver: main/test can take this to learn when the runtime thread exits
     pub exit_receiver: Option<Receiver<RuntimeExit>>,
@@ -114,7 +119,7 @@ pub struct Runtime<T: Sized + Clone + Send, FM: RuntimeMessage, TM: RuntimeMessa
     pub handle: Option<thread::JoinHandle<()>>,
 }
 
-impl<T: Sized + Clone + Send, FM: RuntimeMessage, TM: RuntimeMessage, FW: RuntimeMessage> Runtime<T, FM, TM, FW>
+impl<T: Sized + Clone + Send, FM: RuntimeMessage, TM: RuntimeMessage, FW: RuntimeMessage, TW: RuntimeMessage> Runtime<T, FM, TM, FW, TW>
 where
     T: DeserializeOwned,
 {
@@ -244,7 +249,7 @@ where
         }
     }
 
-    pub fn init_with_toml_file(args: &Vec<String>) -> E2d2Result<Runtime<T, FM, TM, FW>> {
+    pub fn init_with_toml_file(args: &Vec<String>) -> E2d2Result<Runtime<T, FM, TM, FW, TW>> {
         let opts = basic_opts();
 
         let matches = match opts.parse(&args[..]) {
@@ -258,25 +263,26 @@ where
         };
 
         info!("toml file: {}", toml_file);
-        info!("matched option interactive: {}", matches.opt_present("interactive"));
+        debug!("matched option interactive: {}", matches.opt_present("interactive"));
 
         let netbricks_configuration = read_matches(&matches, &opts);
 
-        let config: Config<T> = Runtime::<T, FM, TM, FW>::read_config(&toml_file.trim())?;
+        let config: Config<T> = Runtime::<T, FM, TM, FW, TW>::read_config(&toml_file.trim())?;
         let engine_configuration = config.engine;
 
         // the channels from and to the main thread
-        let (main_sender_fm, rt_receiver_fm) = channel::<FM>();
-        let (rt_sender_tm, main_receiver_tm) = channel::<TM>();
+        let (tx_fm, rx_fm) = channel::<FM>();
+        let (tx_tm, rx_tm) = channel::<TM>();
 
         // the MPSC channel from worker threads, the return channel is created by the worker threads
-        let (worker_sender_fw, rt_receiver_fw) = channel::<FW>();
+        let (tx_fw, rx_fw) = channel::<FW>();
+        let (tx_tw, rx_tw) = broadcast::channel::<TW>(100);
 
         // this calls also DPDK EAL
-        info!("initializing DPDK ...");
+        info!("initializing System ...");
         match initialize_system(&netbricks_configuration)
             .map_err(|e| e.into())
-            .and_then(|ctxt| Runtime::<T, FM, TM, FW>::check_system(ctxt))
+            .and_then(|ctxt| Runtime::<T, FM, TM, FW, TW>::check_system(ctxt))
         {
             Ok(context) => Ok(Runtime {
                 run_configuration: RunConfiguration {
@@ -284,15 +290,16 @@ where
                     netbricks_configuration,
                     engine_configuration,
                     flowdirector_map: HashMap::new(),
-                    main_sender_fm,
-                    worker_sender_fw,
+                    tx_fm,
+                    tx_fw,
+                    tx_tw,
                     b_interactive: matches.opt_present("interactive"),
                 },
                 context: Some(context),
-                rt_receiver_fm: Some(rt_receiver_fm),
-                main_receiver_tm: Some(main_receiver_tm),
-                rt_sender_tm,
-                rt_receiver_fw,
+                rx_fm: Some(rx_fm),
+                rx_tm: Some(rx_tm),
+                tx_tm,
+                rx_fw: Some(rx_fw),
                 toml_file: toml_file.clone(),
                 exit_receiver: None,
                 handle: None,
@@ -305,7 +312,7 @@ where
     }
 
     /// initializes with a toml-file whose name is in args[1]
-    pub fn init() -> E2d2Result<Runtime<T, FM, TM, FW>> {
+    pub fn init() -> E2d2Result<Runtime<T, FM, TM, FW, TW>> {
         Self::set_rte_log_level();
         Self::check_for_root_user();
         // read config file name from command line
@@ -323,7 +330,7 @@ where
     }
 
     /// initializes with a toml-file whose name is read from an indirection file
-    pub fn init_indirectly(indirection_pathname: &str) -> E2d2Result<Runtime<T, FM, TM, FW>> {
+    pub fn init_indirectly(indirection_pathname: &str) -> E2d2Result<Runtime<T, FM, TM, FW, TW>> {
         Self::set_rte_log_level();
         Self::check_for_root_user();
         let mut f = File::open(indirection_pathname).expect("file not found");
@@ -342,11 +349,11 @@ where
     }
 
     /// this returns the communication channel to the run_time thread, only the first call returns the channel
-    pub fn get_main_channel(&mut self) -> Option<(Sender<FM>, Receiver<TM>)> {
-        if self.main_receiver_tm.is_some() {
+    pub fn take_main_endpoints(&mut self) -> Option<(Sender<FM>, Receiver<TM>)> {
+        if self.rx_tm.is_some() {
             Some((
-                self.run_configuration.main_sender_fm.clone(),
-                self.main_receiver_tm.take().unwrap(),
+                self.run_configuration.tx_fm.clone(),
+                self.rx_tm.take().unwrap(),
             ))
         } else {
             None
@@ -394,7 +401,7 @@ where
                 let opt_kni = self.context.as_ref().unwrap().ports.get(*port.kni_name().as_ref().unwrap());
                 if opt_kni.is_some() {
                     let kni = opt_kni.unwrap();
-                    let flow_dir = Runtime::<T, FM, TM, FW>::initialize_flowdirector(port, kni);
+                    let flow_dir = Runtime::<T, FM, TM, FW, TW>::initialize_flowdirector(port, kni);
                     if flow_dir.is_some() {
                         self.run_configuration
                             .flowdirector_map

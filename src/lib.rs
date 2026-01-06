@@ -12,6 +12,7 @@ extern crate separator;
 extern crate serde_derive;
 extern crate uuid;
 extern crate serde;
+extern crate tokio;
 
 pub mod analysis;
 extern crate bincode;
@@ -69,8 +70,8 @@ pub use runtime::install_pipelines_for_all_cores;
 use crate::nftcpproxy::setup_tcp_proxy;
 use crate::proxy_helper::{DelayedMode, PduAllocator};
 
-pub type RunConfigType = RunConfiguration<Configuration, MessageFrom<Store64<Extension>>, MessageFrom<Store64<Extension>>>;
-pub type RuntimeType = Runtime<Configuration, MessageFrom<Store64<Extension>>, MessageTo<Store64<Extension>>, MessageFrom<Store64<Extension>>>;
+pub type RunConfigType = RunConfiguration<Configuration, MessageFrom<Store64<Extension>>, MessageFrom<Store64<Extension>>, MessageTo<Store64<Extension>>>;
+pub type RuntimeType = Runtime<Configuration, MessageFrom<Store64<Extension>>, MessageTo<Store64<Extension>>, MessageFrom<Store64<Extension>>, MessageTo<Store64<Extension>>>;
 
 // Replacement for former `trait alias` of a function-like constraint
 pub trait FnPayload:

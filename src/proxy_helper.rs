@@ -313,7 +313,7 @@ pub fn setup_reverse_channel(
     pipeline_id: &PipelineId,
     run_configuration: &RunConfigType,
 ) -> Receiver<MessageTo<ProxyRecStore>> {
-    let tx = run_configuration.main_sender_fm.clone();
+    let tx = run_configuration.tx_fm.clone();
     debug!("{} setting up reverse channel", pipeline_id);
     let (remote_tx, rx) = channel::<MessageTo<ProxyRecStore>>();
     tx.send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
