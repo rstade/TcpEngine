@@ -315,7 +315,7 @@ impl ConnectionManagerC {
         let avail_ports;
         let cm = ConnectionManagerC {
             c_record_store: store,
-            port2con: vec![Connection::new(); (!port_mask as usize + 1)],
+            port2con: vec![Connection::new(); !port_mask as usize + 1],
             // port 0 is reserved and not usable for us, ports are shuffled for better load sharing in DUTs
             // max_tcp_port itself is reserved for the server side for listening
             free_ports: {
