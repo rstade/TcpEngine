@@ -1,6 +1,6 @@
 [package]
 name = "tcpcengine"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Rainer Stademann <25755224+rstade@users.noreply.github.com>"]
 edition = "2021"
 rust-version = "1.91.1"
@@ -16,8 +16,8 @@ path = "src/bin.rs"
 
 [dependencies]
 # we are using here e2de from branch e2d2-rs-v1 of https://github.com/rstade/NetBricks
-e2d2 = { version = "=1.0.11", path = "../NetBricks/framework", features = ["performance"] }
-netfcts = { version = "0.2.0", path = "src/netfcts" }
+e2d2 = { version = "=1.1.0", path = "../NetBricks/framework", features = ["performance"] }
+netfcts = { version = "0.3.0", path = "src/netfcts" }
 fnv = "*"
 log = ">=0.4"
 env_logger = ">=0.5"

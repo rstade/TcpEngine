@@ -11,7 +11,7 @@ use crate::netfcts::recstore::{Extension, Store64};
 use crate::netfcts::tcp_common::{ReleaseCause, TcpState};
 use crate::netfcts::comm::PipelineId;
 use crate::netfcts::comm::MessageTo;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+// Receiver is now tokio::sync::mpsc::Receiver
 use std::time::Duration;
 use crate::netfcts::io::print_tcp_counters;
 #[cfg(feature = "profiling")]
@@ -255,11 +255,15 @@ impl CollectedData {
 }
 
 /// Collect replies from the main reply channel into convenient structures.
-pub fn collect_from_main_reply(reply_mrx: &Receiver<MessageTo<Store64<Extension>>>, timeout_ms: u64, tsc_frequency: u64) -> CollectedData {
+pub fn collect_from_main_reply(reply_mrx: &mut tokio::sync::mpsc::Receiver<MessageTo<Store64<Extension>>>, timeout_ms: u64, tsc_frequency: u64) -> CollectedData {
     let mut data = CollectedData::new();
 
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
     loop {
-        match reply_mrx.recv_timeout(Duration::from_millis(timeout_ms as u64)) {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        match reply_mrx.try_recv() {
             Ok(MessageTo::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, _rx_tx_stats)) => {
                 // Side-effect prints like before
                 debug!("Received tcp and rx/tx counter data for pipeline {}", pipeline_id);
@@ -282,9 +286,9 @@ pub fn collect_from_main_reply(reply_mrx: &Receiver<MessageTo<Store64<Extension>
             Ok(_m) => {
                 error!("illegal MessageTo received from reply_to_main channel");
             }
-            Err(RecvTimeoutError::Timeout) => {
-                debug!("Timeout receiving from reply_to_main channel (reply_mrx), stopping data collection.");
-                break;
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                // No message available yet, sleep briefly and continue
+                std::thread::sleep(Duration::from_millis(10));
             }
             Err(e) => {
                 error!("error receiving from reply_to_main channel (reply_mrx): {}", e);

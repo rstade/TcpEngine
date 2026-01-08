@@ -20,4 +20,4 @@ targets     = [ { id = "server 1", ipnet = "192.168.222.100/24", linux_if="enp11
                 { id = "server 6", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port= 12350 },
                 { id = "server 7", ipnet = "192.168.222.100/24", linux_if="enp114s0f1" , port= 12351 },
               ]
-test_size     = 30
+test_size     = 200

@@ -13,7 +13,7 @@ pub mod conrecord;
 pub mod cuckoo;
 
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use serde_derive::Deserialize;
 use std::collections::{HashMap, HashSet};
 
@@ -23,15 +23,10 @@ use std::sync::Arc;
 use std::env;
 use std::fs::File;
 use std::io::Read;
-use std::sync::mpsc::{channel, Sender, Receiver, RecvTimeoutError};
-use std::time::Duration;
 use std::thread;
-use std::thread::sleep;
 
 use ipnet::Ipv4Net;
 use macaddr::MacAddr6 as MacAddress;
-use uuid::Uuid;
-use separator::Separatable;
 
 use e2d2::allocators::CacheAligned;
 use e2d2::interface::{
@@ -43,19 +38,15 @@ use e2d2::native::zcsi::{ipv4_phdr_chksum, RteLogLevel, RteLogtype};
 use e2d2::headers::{EndOffset, IpHeader, MacHeader, TcpHeader};
 use e2d2::native::zcsi::fdir_get_infos;
 use e2d2::config::{basic_opts, read_matches, NetbricksConfiguration};
-use e2d2::scheduler::{NetBricksContext, initialize_system, SchedulerCommand, SchedulerReply, StandaloneScheduler};
+use e2d2::scheduler::{NetBricksContext, initialize_system, StandaloneScheduler};
 
 use e2d2::native::zcsi::rte_ethdev_api::{
     rte_log_set_global_level, rte_log_set_level, rte_log_get_global_level, rte_log_get_level,
 };
 use serde::de::DeserializeOwned;
 use self::tcp_common::L234Data;
-use crate::comm::{MessageFrom, MessageTo, RuntimeMessage};
-use crate::comm::PipelineId;
-use crate::io::print_hard_statistics;
-use crate::recstore::SimpleStore;
+use crate::comm::{RuntimeMessage};
 use crate::system::SystemData;
-use crate::tasks::TaskType;
 use crate::tcp_common::tcp_payload_size;
 
 
@@ -64,8 +55,8 @@ pub struct RunConfiguration<T: Sized + Clone, FM: RuntimeMessage, FW: RuntimeMes
     pub netbricks_configuration: NetbricksConfiguration,
     pub engine_configuration: T,
     pub flowdirector_map: HashMap<u16, Arc<FlowDirector>>,
-    pub tx_fm: Sender<FM>,
-    pub tx_fw: Sender<FW>,
+    pub tx_fm: mpsc::Sender<FM>,
+    pub tx_fw: mpsc::Sender<FW>,
     pub tx_tw: broadcast::Sender<TW>,
     /// do we run in interactive mode?
     pub b_interactive: bool,
@@ -105,16 +96,16 @@ pub struct Runtime<T: Sized + Clone + Send, FM: RuntimeMessage, TM: RuntimeMessa
     pub context: Option<NetBricksContext>,
 
     /// will be moved into the runtime thread
-    pub rx_fm: Option<Receiver<FM>>,
+    pub rx_fm: Option<mpsc::Receiver<FM>>,
     /// a single receiver instance for messages sent by runtime thread and pipelines, usually retrieved by main thread
     /// see also get_main_channel()
-    rx_tm: Option<Receiver<TM>>,
-    pub tx_tm: Sender<TM>,
+    rx_tm: Option<mpsc::Receiver<TM>>,
+    pub tx_tm: mpsc::Sender<TM>,
     /// receiver in runtime thread for messages from all the pipelines running, will be moved into the runtime thread
-    pub rx_fw: Option<Receiver<FW>>,
+    pub rx_fw: Option<mpsc::Receiver<FW>>,
     toml_file: String,
     /// exit notification receiver: main/test can take this to learn when the runtime thread exits
-    pub exit_receiver: Option<Receiver<RuntimeExit>>,
+    pub exit_receiver: Option<mpsc::Receiver<RuntimeExit>>,
     /// Join handle of the runtime thread for optional joining
     pub handle: Option<thread::JoinHandle<()>>,
 }
@@ -271,12 +262,12 @@ where
         let engine_configuration = config.engine;
 
         // the channels from and to the main thread
-        let (tx_fm, rx_fm) = channel::<FM>();
-        let (tx_tm, rx_tm) = channel::<TM>();
+        let (tx_fm, rx_fm) = mpsc::channel::<FM>(128);
+        let (tx_tm, rx_tm) = mpsc::channel::<TM>(128);
 
         // the MPSC channel from worker threads, the return channel is created by the worker threads
-        let (tx_fw, rx_fw) = channel::<FW>();
-        let (tx_tw, rx_tw) = broadcast::channel::<TW>(100);
+        let (tx_fw, rx_fw) = mpsc::channel::<FW>(128);
+        let (tx_tw, _rx_tw) = broadcast::channel::<TW>(100);
 
         // this calls also DPDK EAL
         info!("initializing System ...");
@@ -349,7 +340,7 @@ where
     }
 
     /// this returns the communication channel to the run_time thread, only the first call returns the channel
-    pub fn take_main_endpoints(&mut self) -> Option<(Sender<FM>, Receiver<TM>)> {
+    pub fn take_main_endpoints(&mut self) -> Option<(mpsc::Sender<FM>, mpsc::Receiver<TM>)> {
         if self.rx_tm.is_some() {
             Some((
                 self.run_configuration.tx_fm.clone(),
@@ -361,7 +352,7 @@ where
     }
 
     /// Returns the exit notification receiver. Only the first call returns it.
-    pub fn take_exit_receiver(&mut self) -> Option<Receiver<RuntimeExit>> {
+    pub fn take_exit_receiver(&mut self) -> Option<mpsc::Receiver<RuntimeExit>> {
         self.exit_receiver.take()
     }
 
@@ -450,7 +441,7 @@ where
     pub fn join_with_timeout(&mut self, timeout_ms: u64) -> bool {
         use std::time::Duration;
         if let Some(handle) = self.handle.take() {
-            let (tx, rx) = channel::<()>();
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
             thread::spawn(move || {
                 let _ = handle.join();
                 let _ = tx.send(());
@@ -465,11 +456,10 @@ where
     }
 }
 
-pub fn setup_kernel_interfaces(context: &NetBricksContext) {
-    // set up kni: this requires the executable KniHandleRequest to run (serving rte_kni_handle_request)
-    debug!("Number of PMD ports: {}", PmdPort::num_pmd_ports());
+pub fn setup_virtio_interfaces(context: &NetBricksContext) {
+    trace!("Number of PMD ports: {}", PmdPort::num_pmd_ports());
     for port in context.ports.values() {
-        debug!(
+        trace!(
             "port {}:{} -- mac_address= {}",
             port.port_type(),
             port.port_id(),
@@ -498,8 +488,7 @@ pub fn setup_kernel_interfaces(context: &NetBricksContext) {
                     1
                 }
             };
-            // kni interfaces w/o associated port are unusable
-            if port.is_virtio() || associated_port.is_some() {
+            if associated_port.is_some() {
                 setup_linux_if(
                     port.linux_if().unwrap(),
                     &net_spec.ip_net.unwrap(),
@@ -510,11 +499,6 @@ pub fn setup_kernel_interfaces(context: &NetBricksContext) {
             };
         }
     }
-}
-
-#[inline]
-pub fn is_kni_core(pci: &CacheAligned<PortQueue>) -> bool {
-    pci.rxq() == 0
 }
 
 pub fn setup_linux_if(

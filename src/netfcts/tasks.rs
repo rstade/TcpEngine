@@ -7,7 +7,7 @@ use e2d2::scheduler::{Executable, Runnable, Scheduler, StandaloneScheduler};
 use uuid::Uuid;
 use crate::tcp_common::L234Data;
 use log::{warn, error, info};
-use std::sync::mpsc::Sender;
+use tokio::sync::mpsc::Sender;
 use macaddr::MacAddr6;
 use crate::comm::MessageFrom;
 use crate::recstore::{Store64, Extension};
@@ -164,7 +164,7 @@ impl<'a> Executable for PacketInjector {
                     );
                     if let Some(tx) = &self.shutdown_tx {
                         // Best-effort: try to request exit; ignore errors if runtime is already down
-                        let _ = tx.send(MessageFrom::Exit);
+                        let _ = tx.blocking_send(MessageFrom::Exit);
                         info!("PacketInjector: sent Exit to runtime due to fatal allocation failure");
                     } else {
                         error!("PacketInjector: no shutdown_tx available to request graceful exit");

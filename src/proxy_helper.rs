@@ -4,8 +4,6 @@ use crate::netfcts::tcp_common::L234Data;
 use crate::netfcts::tcp_common::{TcpState, TcpStatistics, ReleaseCause, TcpCounter};
 use crate::netfcts::recstore::{Extension, ProxyRecStore, Store64};
 use crate::netfcts::comm::{MessageFrom, MessageTo, PipelineId};
-use crate::netfcts::RunConfiguration;
-use crate::Configuration;
 use crate::proxymanager::ConnectionManager;
 use crate::{FnProxyPayload, FnProxySelectServer, ProxyConnection};
 use crate::get_server_addresses;
@@ -15,7 +13,7 @@ use e2d2::interface::{PortQueue, PortQueueTxBuffered};
 use e2d2::operators::{ReceiveBatch, Batch};
 use e2d2::scheduler::{Runnable, StandaloneScheduler, Scheduler};
 use uuid::Uuid;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver};
 use e2d2::interface::Pdu;
 use e2d2::headers::TcpHeader;
 use crate::netfcts::{prepare_checksum_and_ttl, set_header};
@@ -110,7 +108,7 @@ pub fn handle_timer_tick(
     cm: &mut ConnectionManager,
     wheel: &mut TimerWheel<u16>,
     rx_runtime: &Receiver<MessageTo<ProxyRecStore>>,
-    tx_runtime: &Sender<MessageFrom<Store64<Extension>>>,
+    tx_runtime: &tokio::sync::mpsc::Sender<MessageFrom<Store64<Extension>>>,
     pipeline_id: &PipelineId,
     counter_c: &TcpCounter,
     counter_s: &TcpCounter,
@@ -127,7 +125,7 @@ pub fn handle_timer_tick(
                 .and_then(|p| p.snapshot_rx_tx())
                 .map(|v| v.iter().map(|(t, rx, tx)| (*t, *rx as usize, *tx as usize)).collect());
             tx_runtime
-                .send(MessageFrom::Counter(
+                .blocking_send(MessageFrom::Counter(
                     pipeline_id.clone(),
                     counter_c.clone(),
                     counter_s.clone(),
@@ -143,7 +141,7 @@ pub fn handle_timer_tick(
                 if c_recs.is_some() { c_recs.as_ref().unwrap().len() } else { 0 }
             );
             tx_runtime
-                .send(MessageFrom::CRecords(pipeline_id.clone(), c_recs, None))
+                .blocking_send(MessageFrom::CRecords(pipeline_id.clone(), c_recs, None))
                 .unwrap();
         }
         _ => {}
@@ -316,7 +314,7 @@ pub fn setup_reverse_channel(
     let tx = run_configuration.tx_fm.clone();
     debug!("{} setting up reverse channel", pipeline_id);
     let (remote_tx, rx) = channel::<MessageTo<ProxyRecStore>>();
-    tx.send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
+    tx.blocking_send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
     rx
 }
 
@@ -510,7 +508,7 @@ impl DelayedMode {
         &mut self,
         p: &mut Pdu,
         c: &mut ProxyConnection,
-        me: &Me,
+        _me: &Me,
     ) {
         // Allocate a fresh PDU for crafting the SYN towards the server
         let mut syn = self.alloc_pdu().expect("DelayedMode: failed to allocate PDU for server SYN");

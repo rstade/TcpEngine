@@ -100,8 +100,8 @@ fn delayed_binding_proxy() {
     // start the run_time receive thread
     runtime_thread.start();
 
-    let (mtx, reply_mrx) =  runtime_thread.runtime.take_main_endpoints().expect("cannot take main endpoints");
-    mtx.send(MessageFrom::StartEngine).unwrap();
+    let (mtx, mut reply_mrx) =  runtime_thread.runtime.take_main_endpoints().expect("cannot take main endpoints");
+    mtx.blocking_send(MessageFrom::StartEngine).unwrap();
     thread::sleep(Duration::from_millis(2000 as u64));
 
     // emulate clients
@@ -147,9 +147,23 @@ fn delayed_binding_proxy() {
     }
     thread::sleep(Duration::from_millis(3000)); // wait for clients to be started
 
-    mtx.send(MessageFrom::FetchCRecords).unwrap();
+    mtx.blocking_send(MessageFrom::FetchCRecords).unwrap();
 
-    match reply_mrx.recv_timeout(Duration::from_millis(5000)) {
+    // Poll for the response with timeout
+    let deadline = std::time::Instant::now() + Duration::from_millis(5000);
+    let result = loop {
+        if std::time::Instant::now() >= deadline {
+            break Err(tokio::sync::mpsc::error::TryRecvError::Empty);
+        }
+        match reply_mrx.try_recv() {
+            Ok(msg) => break Ok(msg),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => break Err(e),
+        }
+    };
+    match result {
         Ok(MessageTo::CRecords(_pipeline_id, Some(con_records), _)) => {
             assert_eq!(con_records.len(), configuration.test_size.unwrap() * CLIENT_THREADS);
             let mut timeouts = 0;
@@ -167,7 +181,7 @@ fn delayed_binding_proxy() {
         }
     }
 
-    mtx.send(MessageFrom::Exit).unwrap();
+    mtx.blocking_send(MessageFrom::Exit).unwrap();
     thread::sleep(Duration::from_millis(2000));
 
     info!("terminating ProxyEngine ...");

@@ -1,30 +1,19 @@
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::collections::{HashMap};
 use std::sync::Arc;
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::{env, thread};
-use std::io::Read;
-use std::net::Ipv4Addr;
+use tokio::sync::mpsc as tokio_mpsc;
+use std::{ thread};
 use std::thread::sleep;
 use std::time::Duration;
-use e2d2::allocators::CacheAligned;
 use e2d2::common::errors::Result as E2d2Result;
-use e2d2::config::{basic_opts, read_matches};
-use e2d2::interface::{FlowDirector, FlowSteeringMode, PmdPort, PortQueue, PortType};
-use e2d2::native::zcsi::rte_ethdev_api::{rte_log_get_global_level, rte_log_get_level, rte_log_set_global_level, rte_log_set_level};
-use e2d2::native::zcsi::{fdir_get_infos, RteLogLevel, RteLogtype};
-use e2d2::scheduler::{initialize_system, NetBricksContext, SchedulerCommand, SchedulerReply, StandaloneScheduler};
-use e2d2::common::ErrorKind as E2d2ErrorKind;
-use netfcts::comm::{MessageFrom, MessageTo, PipelineId, RuntimeMessage};
+use e2d2::interface::{  PmdPort };
+use e2d2::scheduler::{ SchedulerCommand, SchedulerReply, StandaloneScheduler};
+use netfcts::comm::{MessageFrom, MessageTo, PipelineId };
 use netfcts::recstore::SimpleStore;
-use netfcts::{get_tcp_port_base, setup_kernel_interfaces, Runtime, RuntimeExit};
+use netfcts::{ setup_virtio_interfaces, Runtime, RuntimeExit};
 use netfcts::io::print_hard_statistics;
-use netfcts::system::SystemData;
 use netfcts::tasks::TaskType;
 use separator::Separatable;
-use serde::de::DeserializeOwned;
 use uuid::Uuid;
-use crate::netfcts::{RunConfiguration};
 use crate::{FnNetworkFunctionGraph, RunConfigType, RuntimeType};
 use crate::setup_pipelines;
 
@@ -59,10 +48,10 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
     pub fn start(&mut self) {
         let mut context = self.runtime.context.take().unwrap();
         let tx_tm = self.runtime.tx_tm.clone();
-        let rx_fm = self.runtime.rx_fm.take().unwrap();
+        let mut rx_fm = self.runtime.rx_fm.take().unwrap();
 
         // create exit notification channel and keep receiver for main
-        let (exit_tx, exit_rx) = channel::<RuntimeExit>();
+        let (exit_tx, exit_rx) = tokio_mpsc::channel::<RuntimeExit>(10);
         self.runtime.exit_receiver = Some(exit_rx);
 
 
@@ -79,14 +68,14 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
             // the latter happens with message StartEngine (see below)
             let result = catch_unwind(AssertUnwindSafe(|| {
                 context.execute_schedulers();
-                setup_kernel_interfaces(&context);
+                setup_virtio_interfaces(&context);
                 // communicate with schedulers and main thread:
                 loop {
-                    match rx_fm.recv_timeout(Duration::from_millis(10)) {
+                    match rx_fm.try_recv() {
                         Ok(MessageFrom::StartEngine) => {
                             debug!("starting generator tasks");
                             for s in &context.scheduler_channels {
-                                s.1.send(SchedulerCommand::SetTaskStateAll(true)).unwrap();
+                                s.1.try_send(SchedulerCommand::SetTaskStateAll(true)).unwrap();
                             }
                         }
                         Ok(MessageFrom::Channel(pipeline_id, sender)) => {
@@ -99,7 +88,7 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                                     .scheduler_channels
                                     .get(i)
                                     .unwrap()
-                                    .send(SchedulerCommand::GetPerformance)
+                                    .try_send(SchedulerCommand::GetPerformance)
                                     .unwrap();
                                 sleep(Duration::from_micros(200));
                             }
@@ -107,7 +96,7 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                         Ok(MessageFrom::Exit) => {
                             // stop all tasks on all schedulers
                             for s in context.scheduler_channels.values() {
-                                s.send(SchedulerCommand::SetTaskStateAll(false)).unwrap();
+                                s.try_send(SchedulerCommand::SetTaskStateAll(false)).unwrap();
                             }
 
 
@@ -134,7 +123,7 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                         Ok(MessageFrom::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter)) => {
                             debug!("{}: received Counter", pipeline_id);
                             tx_tm
-                                .send(MessageTo::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter))
+                                .try_send(MessageTo::Counter(pipeline_id, tcp_counter_to, tcp_counter_from, tx_counter))
                                 .unwrap();
                         }
                         Ok(MessageFrom::FetchCounter) => {
@@ -143,11 +132,11 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                             }
                         }
                         Ok(MessageFrom::EtypeCnt(pipeline_id, etype_cnt)) => {
-                            tx_tm.send(MessageTo::EtypeCnt(pipeline_id, etype_cnt)).unwrap();
+                            tx_tm.try_send(MessageTo::EtypeCnt(pipeline_id, etype_cnt)).unwrap();
                         }
                         Ok(MessageFrom::CRecords(pipeline_id, c_records_client, c_records_server)) => {
                             tx_tm
-                                .send(MessageTo::CRecords(pipeline_id, c_records_client, c_records_server))
+                                .try_send(MessageTo::CRecords(pipeline_id, c_records_client, c_records_server))
                                 .unwrap();
                         }
                         Ok(MessageFrom::FetchCRecords) => {
@@ -156,9 +145,9 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                             }
                         }
                         Ok(MessageFrom::TimeStamps(p, t0, t1)) => {
-                            tx_tm.send(MessageTo::TimeStamps(p, t0, t1)).unwrap();
+                            tx_tm.try_send(MessageTo::TimeStamps(p, t0, t1)).unwrap();
                         }
-                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(tokio_mpsc::error::TryRecvError::Empty) => {}
                         Err(e) => {
                             error!("error receiving from MessageFrom channel: {}", e);
                             // best-effort stop of all tasks and schedulers before exiting the runtime thread
@@ -175,13 +164,12 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                             }
                             break;
                         }
-                        Ok(_) => {}
                     };
                     match context
                         .reply_receiver
-                        .as_ref()
+                        .as_mut()
                         .unwrap()
-                        .recv_timeout(Duration::from_millis(10))
+                        .try_recv()
                     {
                         Ok(SchedulerReply::PerformanceData(core, map)) => {
                             let mut pairs = map.into_iter().collect::<Vec<_>>();
@@ -197,7 +185,7 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                                 )
                             }
                         }
-                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(tokio_mpsc::error::TryRecvError::Empty) => {}
                         Err(e) => {
                             error!("error receiving from SchedulerReply channel: {}", e);
                             // best-effort stop of all tasks and schedulers before exiting the runtime thread
@@ -215,6 +203,8 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                             break;
                         }
                     }
+                    // Small sleep to avoid busy-waiting
+                    sleep(Duration::from_millis(10));
                 }
                 info!("exiting mrx recv thread of the Runtime ...");
             }));
@@ -222,7 +212,7 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
             match result {
                 Ok(_) => {
                     info!("Runtime: signaling RuntimeExit::Ok to main (exit_tx)");
-                    if let Err(e) = exit_tx.send(RuntimeExit::Ok) {
+                    if let Err(e) = exit_tx.try_send(RuntimeExit::Ok) {
                         error!("Runtime: failed to send RuntimeExit::Ok to main: {}", e);
                     }
                 }
@@ -235,7 +225,7 @@ impl<T:Sized + Clone + Send, TStore: SimpleStore + Clone> RuntimeThread<T, TStor
                         "panic in runtime thread (non-string payload)".to_string()
                     };
                     info!("Runtime: signaling RuntimeExit::Err to main (exit_tx): {}", msg);
-                    if let Err(e) = exit_tx.send(RuntimeExit::Err(msg)) {
+                    if let Err(e) = exit_tx.try_send(RuntimeExit::Err(msg)) {
                         error!("Runtime: failed to send RuntimeExit::Err to main: {}", e);
                     }
                 }

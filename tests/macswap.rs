@@ -109,7 +109,7 @@ pub fn macswap() {
 
     let (mtx, _reply_mrx) = runtime_thread.runtime.take_main_endpoints().expect("cannot take main endpoints");
     // start generator
-    mtx.send(MessageFrom::StartEngine).unwrap();
+    mtx.blocking_send(MessageFrom::StartEngine).unwrap();
 
     thread::sleep(Duration::from_millis(1000u64));
 
@@ -119,7 +119,7 @@ pub fn macswap() {
         thread::sleep(Duration::from_millis(200u64)); // Sleep for a bit
     }
 
-    mtx.send(MessageFrom::Exit).unwrap();
+    mtx.blocking_send(MessageFrom::Exit).unwrap();
 
     thread::sleep(Duration::from_millis(200u64)); // Sleep for a bit
     process::exit(0);

@@ -74,10 +74,10 @@ pub fn main() {
     thread::sleep(Duration::from_millis(STARTUP_DELAY_MS));
 
     // Get exit notification receiver to detect early runtime thread termination
-    let exit_rx = runtime_thread.runtime.take_exit_receiver().expect("no exit receiver available");
+    let mut exit_rx = runtime_thread.runtime.take_exit_receiver().expect("no exit receiver available");
 
     // Helper to detect early runtime termination uniformly (visible to both branches below)
-    fn runtime_exit_triggered(exit_rx: &std::sync::mpsc::Receiver<RuntimeExit>) -> bool {
+    fn runtime_exit_triggered(exit_rx: &mut tokio::sync::mpsc::Receiver<RuntimeExit>) -> bool {
         match exit_rx.try_recv() {
             Ok(RuntimeExit::Ok) => {
                 info!("Runtime thread exited normally (early). Initiating shutdown.");
@@ -87,22 +87,22 @@ pub fn main() {
                 info!("Runtime thread exited with error: {}. Initiating shutdown.", msg);
                 true
             }
-            Err(TryRecvError::Empty) => false,
-            Err(TryRecvError::Disconnected) => {
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => false,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                 info!("Runtime exit channel disconnected. Initiating shutdown.");
                 true
             }
         }
     }
 
-    let (mtx, reply_mrx) = runtime_thread.runtime.take_main_endpoints().expect("cannot get main channel");
+    let (mtx, mut reply_mrx) = runtime_thread.runtime.take_main_endpoints().expect("cannot get main channel");
 
     info!("before run: available mbufs in memory pool= {:6}\n", unsafe {
         mbuf_avail_count()
     });
 
     // start the engine by setting all tasks on scheduler threads to ready state
-    mtx.send(MessageFrom::StartEngine).unwrap();
+    mtx.blocking_send(MessageFrom::StartEngine).unwrap();
 
     // flag to detect if runtime exited early so we can skip post-loop requests
     let mut runtime_exited_early = false;
@@ -145,7 +145,7 @@ pub fn main() {
         // Main interactive loop: poll for either runtime exit or user input
         loop {
             // Detect early runtime termination
-            if runtime_exit_triggered(&exit_rx) {
+            if runtime_exit_triggered(&mut exit_rx) {
                 runtime_exited_early = true;
                 break;
             }
@@ -164,7 +164,7 @@ pub fn main() {
                         Some(arg_matches) => {
                             // Both flags trigger the same request; send once if either is set
                             if arg_matches.get_flag("performance") || arg_matches.get_flag("rxtx") {
-                                mtx.send(MessageFrom::PrintPerformance(cores.clone())).unwrap();
+                                mtx.blocking_send(MessageFrom::PrintPerformance(cores.clone())).unwrap();
                                 thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
                             }
                         }
@@ -202,7 +202,7 @@ pub fn main() {
         println!("press ctrl-c to terminate TcpEngine ...");
         while running.load(Ordering::SeqCst) {
             // Detect early runtime termination
-            if runtime_exit_triggered(&exit_rx) {
+            if runtime_exit_triggered(&mut exit_rx) {
                 runtime_exited_early = true;
                 break;
             }
@@ -216,10 +216,10 @@ pub fn main() {
 
     if !runtime_exited_early {
         // request performance data
-        mtx.send(MessageFrom::PrintPerformance(cores)).unwrap();
+        mtx.blocking_send(MessageFrom::PrintPerformance(cores)).unwrap();
         thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
         // request counters
-        mtx.send(MessageFrom::FetchCounter).unwrap();
+        mtx.blocking_send(MessageFrom::FetchCounter).unwrap();
         // request connection records
         if run_configuration
             .engine_configuration
@@ -227,14 +227,14 @@ pub fn main() {
             .detailed_records
             .unwrap_or(false)
         {
-            mtx.send(MessageFrom::FetchCRecords).unwrap();
+            mtx.blocking_send(MessageFrom::FetchCRecords).unwrap();
         }
         thread::sleep(Duration::from_millis(PRINT_DELAY_MS));
     }
 
     let collected = if !runtime_exited_early {
         debug!("Collecting data from runtime ...");
-        collect_from_main_reply(&reply_mrx, REPLY_TIMEOUT_MS, run_configuration.system_data.tsc_frequency)
+        collect_from_main_reply(&mut reply_mrx, REPLY_TIMEOUT_MS, run_configuration.system_data.tsc_frequency)
     } else {
         // empty collected data if runtime already exited
         debug!("Runtime exited early, skipping data collection.");
@@ -293,7 +293,7 @@ pub fn main() {
 
     // Request graceful shutdown of all scheduler threads and the runtime thread
     info!("Shutdown: requesting engine exit (MessageFrom::Exit)");
-    match mtx.send(MessageFrom::Exit) {
+    match mtx.blocking_send(MessageFrom::Exit) {
         Ok(_) => {}
         Err(e) => {
             info!("Shutdown: could not send Exit to runtime (likely already exited): {}", e);
@@ -330,16 +330,16 @@ pub fn main() {
                 terminated = true;
                 break;
             }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                 info!("Shutdown: runtime exit channel disconnected");
                 terminated = true;
                 break;
             }
         }
-        match reply_mrx.recv_timeout(Duration::from_millis(SHUTDOWN_POLL_MS)) {
+        match reply_mrx.try_recv() {
             // runtime thread has exited and dropped its senders
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                 terminated = true;
                 info!(
                     "Shutdown: runtime thread terminated; reply channel closed after {} ms",
@@ -350,12 +350,13 @@ pub fn main() {
             // ignore any late messages while shutting down
             Ok(_msg) => {}
             // still waiting
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                 if Instant::now() >= deadline {
                     break;
                 }
             }
         }
+        thread::sleep(Duration::from_millis(SHUTDOWN_POLL_MS));
     }
     if !terminated {
         info!(

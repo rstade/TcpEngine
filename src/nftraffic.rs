@@ -1,5 +1,5 @@
 use e2d2::operators::{ReceiveBatch, Batch, merge_auto, SchedulingPolicy};
-use e2d2::scheduler::{Runnable, Scheduler, StandaloneScheduler};
+use e2d2::scheduler::{StandaloneScheduler};
 use e2d2::allocators::CacheAligned;
 use e2d2::interface::*;
 use e2d2::queues::{new_mpsc_queue_pair, new_mpsc_queue_pair_with_size};
@@ -14,7 +14,7 @@ use bincode::{deserialize};
 use separator::Separatable;
 
 use crate::tcpmanager::{Connection, ConnectionManagerC, ConnectionManagerS};
-use crate::{get_server_addresses, Configuration, RunConfigType};
+use crate::{get_server_addresses, RunConfigType};
 
 use crate::netfcts::tcp_common::{
     TcpState, TcpStatistics, TcpCounter, TcpRole, CData, L234Data, ReleaseCause, tcp_payload_size, TcpFlags,
@@ -27,7 +27,7 @@ use crate::netfcts::utils::Timeouts;
 use crate::netfcts::tasks::{PRIVATE_ETYPE_PACKET, PRIVATE_ETYPE_TIMER, ETYPE_IPV4};
 use crate::netfcts::tasks::{private_etype, PacketInjector, TickGenerator, install_task};
 use crate::netfcts::timer_wheel::TimerWheel;
-use crate::netfcts::{prepare_checksum_and_ttl, RunConfiguration};
+use crate::netfcts::{prepare_checksum_and_ttl};
 use crate::netfcts::set_header;
 use crate::netfcts::remove_tcp_options;
 use crate::netfcts::{make_reply_packet, strip_payload};
@@ -145,7 +145,7 @@ pub fn setup_generator<FPL>(
     debug!("{} setting up reverse channel", pipeline_id);
     let (remote_tx, rx) = channel::<MessageTo<Store64<Extension>>>();
     // we send the transmitter to the remote receiver of our messages, i.e. the Runtime
-    tx.send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
+    tx.blocking_send(MessageFrom::Channel(pipeline_id.clone(), remote_tx)).unwrap();
 
 
     start_kni_forwarder(sched, &kni, &pci, "Kni2Pci");
@@ -229,7 +229,7 @@ pub fn setup_generator<FPL>(
         .with_shutdown_tx(tx.clone())
         .set_start_delay(frequency / 200),
     );
-    tx.send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::PacketGenerator))
+    tx.blocking_send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::PacketGenerator))
         .unwrap();
     let syn_injector_ready_flag = sched.get_ready_flag(&injector_uuid).unwrap();
 
@@ -247,7 +247,7 @@ pub fn setup_generator<FPL>(
         .with_shutdown_tx(tx.clone())
         .set_start_delay(frequency / 200),
     );
-    tx.send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::PacketGenerator))
+    tx.blocking_send(MessageFrom::Task(pipeline_id.clone(), injector_uuid, TaskType::PacketGenerator))
         .unwrap();
     let payload_injector_ready_flag = sched.get_ready_flag(&injector_uuid).unwrap();
 
@@ -258,7 +258,7 @@ pub fn setup_generator<FPL>(
     let wheel_tick_reduction_factor = wheel_c.resolution() / tick_generator.tick_length();
     let mut ticks = 0;
     let uuid_task = install_task(sched, "TickGenerator", tick_generator);
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_task, TaskType::TickGenerator))
+    tx.blocking_send(MessageFrom::Task(pipeline_id.clone(), uuid_task, TaskType::TickGenerator))
         .unwrap();
 
     let receive_pci = ReceiveBatch::new(pci.clone());
@@ -705,7 +705,7 @@ pub fn setup_generator<FPL>(
                                 .snapshot_rx_tx()
                                 .map(|v| v.iter().map(|(t, rx, tx)| (*t, *rx as usize, *tx as usize)).collect());
                             tx_clone
-                                .send(MessageFrom::Counter(
+                                .blocking_send(MessageFrom::Counter(
                                     pipeline_id_clone.clone(),
                                     counter_c.clone(),
                                     counter_s.clone(),
@@ -715,7 +715,7 @@ pub fn setup_generator<FPL>(
                         }
                         #[cfg(not(feature = "profiling"))]
                         tx_clone
-                            .send(MessageFrom::Counter(
+                            .blocking_send(MessageFrom::Counter(
                                 pipeline_id_clone.clone(),
                                 counter_c.clone(),
                                 counter_s.clone(),
@@ -734,7 +734,7 @@ pub fn setup_generator<FPL>(
                     Ok(MessageTo::FetchCRecords) => {
                         //trace!("{} got FetchCrecords", thread_id);
                         tx_clone
-                            .send(MessageFrom::CRecords(
+                            .blocking_send(MessageFrom::CRecords(
                                 pipeline_id_clone.clone(),
                                 cm_c.fetch_c_records(),
                                 cm_s.fetch_c_records(),
@@ -746,7 +746,7 @@ pub fn setup_generator<FPL>(
                 // check if we are ready and both time stamps are set:
                 if start_stamp > 0 && stop_stamp > 0 {
                     tx_clone
-                        .send(MessageFrom::TimeStamps(pipeline_id_clone.clone(), start_stamp, stop_stamp))
+                        .blocking_send(MessageFrom::TimeStamps(pipeline_id_clone.clone(), start_stamp, stop_stamp))
                         .unwrap();
                     // so we  do not send again:
                     start_stamp = 0;
@@ -1174,10 +1174,10 @@ pub fn setup_generator<FPL>(
     .send(pci.clone());
 
     let uuid_pipe2kni = install_task(sched, "Pipe2Kni", pipe2kni);
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::KniSend))
+    tx.blocking_send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::KniSend))
         .unwrap();
 
     let uuid_pipe2pci = install_task(sched, "Pipe2Pci", pipe2pci);
-    tx.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pci, TaskType::EgressSend))
+    tx.blocking_send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pci, TaskType::EgressSend))
         .unwrap();
 }

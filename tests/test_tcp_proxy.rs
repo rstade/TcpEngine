@@ -13,7 +13,6 @@ use std::time::Duration;
 use std::thread;
 use std::io::{Read, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc::RecvTimeoutError;
 use std::fs::File;
 use std::collections::HashMap;
 use std::vec::Vec;
@@ -151,8 +150,8 @@ fn tcp_proxy() {
     // start the run_time receive thread
     runtime_thread.start();
 
-    let (mtx, reply_mrx) = runtime_thread.runtime.take_main_endpoints().expect("cannot take main endpoints");
-    mtx.send(MessageFrom::StartEngine).unwrap();
+    let (mtx, mut reply_mrx) = runtime_thread.runtime.take_main_endpoints().expect("cannot take main endpoints");
+    mtx.blocking_send(MessageFrom::StartEngine).unwrap();
     thread::sleep(Duration::from_millis(2000u64));
 
     debug!(
@@ -236,20 +235,24 @@ fn tcp_proxy() {
 
     thread::sleep(Duration::from_millis(200)); // Sleep for a bit
 
-    mtx.send(MessageFrom::PrintPerformance(cores)).unwrap();
+    mtx.blocking_send(MessageFrom::PrintPerformance(cores)).unwrap();
     thread::sleep(Duration::from_millis(1000 as u64));
 
-    mtx.send(MessageFrom::FetchCounter).unwrap();
+    mtx.blocking_send(MessageFrom::FetchCounter).unwrap();
     if configuration.engine.detailed_records.unwrap_or(false) {
-        mtx.send(MessageFrom::FetchCRecords).unwrap();
+        mtx.blocking_send(MessageFrom::FetchCRecords).unwrap();
     }
 
     let mut tcp_counters_c = HashMap::new();
     let mut tcp_counters_s = HashMap::new();
     let mut con_records = HashMap::new();
 
+    let deadline = std::time::Instant::now() + Duration::from_millis(1000);
     loop {
-        match reply_mrx.recv_timeout(Duration::from_millis(1000)) {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        match reply_mrx.try_recv() {
             Ok(MessageTo::Counter(pipeline_id, tcp_counter_c, tcp_counter_s, rx_tx_stats)) => {
                 print_tcp_counters(&pipeline_id, &tcp_counter_c, &tcp_counter_s);
                 if rx_tx_stats.is_some() {
@@ -263,8 +266,8 @@ fn tcp_proxy() {
                 con_records.insert(pipeline_id, recv_con_records);
             }
             Ok(_m) => error!("illegal MessageTo received from reply_to_main channel"),
-            Err(RecvTimeoutError::Timeout) => {
-                break;
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                thread::sleep(Duration::from_millis(10));
             }
             Err(e) => {
                 error!("error receiving from reply_to_main channel (reply_mrx): {}", e);
@@ -378,7 +381,7 @@ fn tcp_proxy() {
 
     }
 
-    mtx.send(MessageFrom::Exit).unwrap();
+    mtx.blocking_send(MessageFrom::Exit).unwrap();
     thread::sleep(Duration::from_millis(2000));
 
     info!("terminating ProxyEngine ...");

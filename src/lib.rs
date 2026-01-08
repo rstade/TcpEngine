@@ -63,7 +63,6 @@ use rand::Rng;
 use netfcts::recstore::{Extension, Store64};
 use netfcts::system::{get_mac_from_ifname};
 use netfcts::tcp_common::tcp_payload_size;
-// use nfdelayedproxy::setup_delayed_proxy; // removed: no such function, use setup_tcp_proxy below
 use nftraffic::setup_generator;
 
 pub use runtime::install_pipelines_for_all_cores;

@@ -12,9 +12,7 @@ use std::sync::atomic::Ordering;
 
 use uuid::Uuid;
 
-use crate::netfcts::recstore::{Extension, Store64};
 use crate::netfcts::tcp_common::*;
-use crate::netfcts::RunConfiguration;
 use crate::netfcts::{make_reply_packet, prepare_checksum_and_ttl, remove_tcp_options, set_header, tasks};
 use crate::proxymanager::ConnectionManager;
 
@@ -26,7 +24,6 @@ use crate::proxy_helper::{
     maybe_enable_tx_offload, pass_tcp_port_filter, release_if_needed, server_to_client_common, start_kni_forwarder,
     DelayedMode, IngressDecision, Me, PROXY_PROF_LABELS,
 };
-use crate::Configuration;
 
 // Timer wheel configuration and overflow guard are centralized in proxy_common
 
@@ -80,7 +77,7 @@ pub fn setup_tcp_proxy<F1, F2>(
     // (before moving `mode` into closures below).
     if let Some(consumer) = delayed_mode.as_mut().and_then(|m| m.take_bypass_consumer()) {
         let uuid_consumer = tasks::install_task(sched, "BypassPipe", consumer.send(pci.clone()));
-        tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_consumer, TaskType::BypassPipe))
+        tx2runtime.blocking_send(MessageFrom::Task(pipeline_id.clone(), uuid_consumer, TaskType::BypassPipe))
             .unwrap();
     }
 
@@ -91,7 +88,7 @@ pub fn setup_tcp_proxy<F1, F2>(
     let wheel_tick_reduction_factor = wheel.resolution() / tick_generator.tick_length();
     let mut ticks = 0;
     let uuid_tick_generator = tasks::install_task(sched, "TickGenerator", tick_generator);
-    tx2runtime.send(MessageFrom::Task(
+    tx2runtime.blocking_send(MessageFrom::Task(
         pipeline_id.clone(),
         uuid_tick_generator,
         TaskType::TickGenerator,
@@ -617,10 +614,10 @@ pub fn setup_tcp_proxy<F1, F2>(
     .send(pci.clone());
 
     let uuid_pipe2kni = tasks::install_task(sched, "Pipe2Kni", pipe2kni);
-    tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::KniSend))
+    tx2runtime.blocking_send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2kni, TaskType::KniSend))
         .unwrap();
 
     let uuid_pipe2pic = tasks::install_task(sched, "Pipe2Pci", pipe2pci);
-    tx2runtime.send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pic, TaskType::EgressSend))
+    tx2runtime.blocking_send(MessageFrom::Task(pipeline_id.clone(), uuid_pipe2pic, TaskType::EgressSend))
         .unwrap();
 }
