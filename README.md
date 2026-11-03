@@ -1,3 +1,6 @@
+## This repository is no longer maintained by me. If you are interested in a high performance traffic generator, please have a look at [Wabrix](https://github.com/ninegamma/wabrix). ##
+
+
 ## TcpEngine Overview
 
 TcpEngine is the successor of [TrafficEngine](https://github.com/rstade/TrafficEngine) and [ProxyEngine](https://github.com/silverengine-de/proxyengine). It combines the functionality ob both engines into a single codebase. TcpEngine can either run as stateful user-space TCP traffic generator or as a pass-through TCP proxy, optionally with delayed binding. 
